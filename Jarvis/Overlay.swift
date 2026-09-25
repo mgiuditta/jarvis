@@ -56,7 +56,8 @@ struct OverlayView: View {
                 .dropDestination(for: URL.self) { urls, _ in
                     app.ingest(files: urls.filter(\.isFileURL)); return true
                 } isTargeted: { dropTargeted = $0 }
-                .help("Jarvis: ⌥Space per parlare, trascina qui un file per /ingest")
+                .contextMenu { MenuContent(app: app) }  // menu bar icon can hide behind the notch
+                .help("Jarvis: ⌥Space per parlare, trascina qui un file per /ingest, clic destro per il menu")
         }
         .padding(8)
         .fixedSize()
