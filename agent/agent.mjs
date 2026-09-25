@@ -60,11 +60,11 @@ function start() {
       includePartialMessages: true,
       systemPrompt: { type: 'preset', preset: 'claude_code', append: STYLE },
       pathToClaudeCodeExecutable: process.env.JARVIS_CLAUDE || undefined,
-      // Tools the vault settings don't pre-allow: ask by voice.
-      canUseTool: async (tool, toolInput) =>
-        (await ask(`Posso usare ${tool}: ${summary(toolInput)}?`))
-          ? { behavior: 'allow', updatedInput: toolInput }
-          : { behavior: 'deny', message: "L'utente ha rifiutato." },
+      // Tools the vault settings don't pre-allow. Voice confirmation is only for destructive actions
+      // (PreToolUse hook below); settings "deny" rules still apply before this is called.
+      canUseTool: async (tool, toolInput) => tool === 'AskUserQuestion'
+        ? { behavior: 'deny', message: "Sei un assistente vocale: fai la domanda nel testo della risposta, l'utente risponde a voce." }
+        : { behavior: 'allow', updatedInput: toolInput },
       hooks: {
         // Runs even for pre-allowed tools: enforces the vault's "ask before destroying" rule.
         PreToolUse: [{ timeout: 600, hooks: [async (h) => {
@@ -103,6 +103,7 @@ function handle(m) {
     for (const b of m.message.content ?? [])
       if (b.type === 'tool_use') send({ type: 'tool_call', id: turnId, name: b.name, summary: summary(b.input) });
   } else if (m.type === 'result') {
+    cancelPending();
     if (m.subtype === 'success') send({ type: 'done', id: turnId, text: m.result ?? '', session_id: m.session_id });
     else send({ type: 'error', id: turnId, message: (m.errors ?? [m.subtype]).join('; ') });
   }

@@ -71,6 +71,7 @@ struct RecentCommand: Identifiable, Codable {
     func listen() {
         guard audio.isReady else { status = "Il modello vocale non è ancora pronto."; expand(); return }
         listenAfterSpeech = false
+        speaker.stop()  // never record Jarvis's own voice
         transcript = ""
         state = .listening
         expand()
@@ -216,6 +217,7 @@ struct RecentCommand: Identifiable, Codable {
             say(q)
         case "done":
             busy = false
+            confirmation = nil
             lastAnswer = e.text ?? answer
             if let text = e.text, !text.isEmpty { answer = text }
             Log.write("jarvis: \(Speaker.spokenPart(of: lastAnswer))")

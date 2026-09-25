@@ -9,6 +9,15 @@ private final class CancelFlag: @unchecked Sendable {
     func set() { lock.withLock { _on = true } }
 }
 
+/// Buffers scheduled on the player but not yet played. Touched from TTSKit's thread and the audio thread.
+private final class Counter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var n = 0
+    var value: Int { lock.withLock { n } }
+    func add(_ d: Int) { lock.withLock { n = max(0, n + d) } }
+    func reset() { lock.withLock { n = 0 } }
+}
+
 /// Sentence-by-sentence TTS through our own AVAudioEngine, so the orb can run an FFT on the real voice.
 /// Neural voice: TTSKit (Qwen3-TTS 1.7B, local). Fallback while it loads, or by choice: AVSpeechSynthesizer.write().
 @MainActor final class Speaker {
@@ -19,13 +28,12 @@ private final class CancelFlag: @unchecked Sendable {
     private let synth = AVSpeechSynthesizer()
     private var tts: TTSKit?
     private var cancel = CancelFlag()
-    private var chunk: [Float] = []   // pre-buffer so the first frames don't underrun
+    private let scheduled = Counter()
     private let engine = AVAudioEngine()
     private let player = AVAudioPlayerNode()
     private var connectedFormat: AVAudioFormat?
     private var queue: [String] = []
     private var rendering = false
-    private var pendingBuffers = 0
     private var generation = 0   // bumps on stop() so late callbacks are ignored
 
     /// Streaming state for the current answer: only the part before the first blank line is spoken.
@@ -33,7 +41,7 @@ private final class CancelFlag: @unchecked Sendable {
     private var spokenDone = false
     private var streamed = false
 
-    var isSpeaking: Bool { rendering || pendingBuffers > 0 || !queue.isEmpty }
+    var isSpeaking: Bool { rendering || scheduled.value > 0 || !queue.isEmpty }
 
     init() {
         engine.attach(player)
@@ -89,11 +97,11 @@ private final class CancelFlag: @unchecked Sendable {
 
     func stop() {
         generation += 1
-        cancel.set(); cancel = CancelFlag(); chunk = []
+        cancel.set(); cancel = CancelFlag()
         queue.removeAll()
         synth.stopSpeaking(at: .immediate)
         player.stop()
-        rendering = false; pendingBuffers = 0
+        rendering = false; scheduled.reset()
         spokenDone = true
         levels.set(.zero)
     }
@@ -126,40 +134,59 @@ private final class CancelFlag: @unchecked Sendable {
         }
     }
 
+    /// Chunks go straight from TTSKit's callback thread to the player, in order: no main-actor hop,
+    /// so "done speaking" can't be observed while audio is still on its way.
     private func renderNeural(_ text: String, tts: TTSKit, speaker: Qwen3Speaker) {
-        let gen = generation, flag = cancel
+        guard let format = AVAudioFormat(standardFormatWithSampleRate: 24_000, channels: 1) else { rendering = false; return }
+        prepare(format)
+        let gen = generation, flag = cancel, player = player, scheduled = scheduled
+        let played: @Sendable () -> Void = { Task { @MainActor [weak self] in self?.bufferPlayed(generation: gen) } }
         var options = GenerationOptions()
         options.instruction = "Parla in italiano con tono calmo, asciutto e professionale."
-        Task {
+        Task.detached {
+            // ponytail: 0.6 s pre-buffer then 0.3 s chunks; generation is ~1.15x realtime on M4 Pro, raise if gaps
+            var pending: [Float] = [], started = false
+            func flush() {
+                guard !pending.isEmpty, !flag.on,
+                      let buf = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(pending.count)) else { return }
+                buf.frameLength = buf.frameCapacity
+                pending.withUnsafeBufferPointer { buf.floatChannelData![0].update(from: $0.baseAddress!, count: $0.count) }
+                pending = []; started = true
+                scheduled.add(1)
+                player.scheduleBuffer(buf) { scheduled.add(-1); played() }
+            }
             do {
-                _ = try await tts.generate(text: text, speaker: speaker, language: .italian, options: options) { [weak self] step in
-                    let samples = step.audio
-                    Task { @MainActor in self?.receivedNeural(samples, generation: gen) }
+                _ = try await tts.generate(text: text, speaker: speaker, language: .italian, options: options) { step in
+                    pending += step.audio
+                    if pending.count >= (started ? 7_200 : 14_400) { flush() }
                     return !flag.on
                 }
             } catch { if !flag.on { Log.write("TTSKit errore: \(error)") } }
-            guard gen == generation else { return }
-            flushChunk(generation: gen)
-            rendering = false
-            renderNext()
-            if !isSpeaking { onIdle?() }
+            flush()
+            await MainActor.run { [weak self] in self?.neuralFinished(generation: gen) }
         }
     }
 
-    // ponytail: 0.3 s pre-buffer, generation runs ~1.15x realtime on M4 Pro; raise it if you hear gaps
-    private func receivedNeural(_ samples: [Float], generation gen: Int) {
+    private func neuralFinished(generation gen: Int) {
         guard gen == generation else { return }
-        chunk += samples
-        if chunk.count >= 7_200 { flushChunk(generation: gen) }
+        rendering = false
+        renderNext()
+        if !isSpeaking { levels.set(.zero); onIdle?() }
     }
 
-    private func flushChunk(generation gen: Int) {
-        guard !chunk.isEmpty, let format = AVAudioFormat(standardFormatWithSampleRate: 24_000, channels: 1),
-              let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(chunk.count)) else { return }
-        buffer.frameLength = buffer.frameCapacity
-        chunk.withUnsafeBufferPointer { buffer.floatChannelData![0].update(from: $0.baseAddress!, count: $0.count) }
-        chunk = []
-        received(buffer, generation: gen)
+    private func bufferPlayed(generation gen: Int) {
+        guard gen == generation, !isSpeaking else { return }
+        levels.set(.zero)
+        onIdle?()
+    }
+
+    private func prepare(_ format: AVAudioFormat) {
+        if connectedFormat != format {
+            engine.connect(player, to: engine.mainMixerNode, format: format)
+            connectedFormat = format
+        }
+        if !engine.isRunning { try? engine.start() }
+        if !player.isPlaying { player.play(); onStart?() }
     }
 
     private func received(_ pcm: AVAudioPCMBuffer, generation gen: Int) {
@@ -171,19 +198,12 @@ private final class CancelFlag: @unchecked Sendable {
             return
         }
         guard let buffer = Self.float(pcm) else { return }
-        if connectedFormat != buffer.format {
-            engine.connect(player, to: engine.mainMixerNode, format: buffer.format)
-            connectedFormat = buffer.format
-        }
-        if !engine.isRunning { try? engine.start() }
-        if !player.isPlaying { player.play(); onStart?() }
-        pendingBuffers += 1
+        prepare(buffer.format)
+        let scheduled = scheduled
+        scheduled.add(1)
         player.scheduleBuffer(buffer) { [weak self] in
-            Task { @MainActor in
-                guard let self, gen == self.generation else { return }
-                self.pendingBuffers -= 1
-                if !self.isSpeaking { self.levels.set(.zero); self.onIdle?() }
-            }
+            scheduled.add(-1)
+            Task { @MainActor in self?.bufferPlayed(generation: gen) }
         }
     }
 
