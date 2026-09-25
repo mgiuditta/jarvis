@@ -23,12 +23,13 @@ struct RecentCommand: Identifiable, Codable {
     var status = ""
     var expanded = false
     var transcribing = false
+    var orbShown = false
     var recent: [RecentCommand] = (try? JSONDecoder().decode([RecentCommand].self, from: UserDefaults.standard.data(forKey: "recent") ?? Data())) ?? []
 
     @ObservationIgnored let audio = AudioIn()
     @ObservationIgnored let speaker = Speaker()
     @ObservationIgnored let agent = AgentClient()
-    @ObservationIgnored var setOrbVisible: ((Bool) -> Void)?
+    @ObservationIgnored var showOrb: ((Bool) -> Void)?
     @ObservationIgnored private var busy = false
     @ObservationIgnored private var lastAnswer = ""
     @ObservationIgnored private var listenAfterSpeech = false
@@ -48,7 +49,10 @@ struct RecentCommand: Identifiable, Codable {
         speaker.onIdle = { [weak self] in self?.speechEnded() }
         agent.onEvent = { [weak self] in self?.handle($0) }
         agent.start()
-        Task { await audio.loadModel() }
+        Task {
+            await audio.loadModel()
+            await speaker.loadNeuralVoice()  // after Whisper: don't compile two models at once
+        }
     }
 
     // MARK: input
@@ -246,13 +250,23 @@ struct RecentCommand: Identifiable, Codable {
     func expand() {
         collapseTask?.cancel()
         expanded = true
+        if !orbShown { setOrb(true) }
+    }
+
+    /// `remember` = user choice from menu/hotkey; auto show/hide doesn't persist.
+    func setOrb(_ visible: Bool, remember: Bool = false) {
+        orbShown = visible
+        showOrb?(visible)
+        if remember { UserDefaults.standard.set(visible, forKey: "orbVisible") }
     }
 
     private func scheduleCollapse() {
         collapseTask?.cancel()
         collapseTask = Task {
             try? await Task.sleep(for: .seconds(25))
-            if !Task.isCancelled, state == .idle { expanded = false }
+            guard !Task.isCancelled, state == .idle else { return }
+            expanded = false
+            if Prefs.orbOnlyWhenActive { setOrb(false) }
         }
     }
 

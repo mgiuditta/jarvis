@@ -39,6 +39,7 @@ enum Prefs {
     static var voiceID: String? { d.string(forKey: "voiceID").nonEmpty }
     static var speechRate: Double { d.object(forKey: "speechRate") as? Double ?? 0.5 }
     static var orbVisible: Bool { d.object(forKey: "orbVisible") as? Bool ?? true }
+    static var orbOnlyWhenActive: Bool { d.bool(forKey: "orbOnlyWhenActive") }
 
     /// Latest nvm node, so a `nvm install` doesn't break Jarvis unless a path is set explicitly.
     static func defaultNode() -> String {

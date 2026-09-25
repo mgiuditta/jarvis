@@ -3,6 +3,7 @@ import KeyboardShortcuts
 
 extension KeyboardShortcuts.Name {
     static let talk = Self("talk", default: .init(.space, modifiers: [.option]))
+    static let toggleOrb = Self("toggleOrb", default: .init(.space, modifiers: [.option, .shift]))
 }
 
 @main
@@ -38,15 +39,10 @@ struct JarvisApp: App {
         Log.write("Jarvis avviato")
         let panel = OverlayPanel(app: app)
         self.panel = panel
-        app.setOrbVisible = { visible in
-            UserDefaults.standard.set(visible, forKey: "orbVisible")
-            visible ? panel.orderFrontRegardless() : panel.orderOut(nil)
-        }
-        if Prefs.orbVisible { panel.orderFrontRegardless() }
-        KeyboardShortcuts.onKeyUp(for: .talk) { [app] in
-            if !(self.panel?.isVisible ?? false) { app.setOrbVisible?(true) }
-            app.hotkey()
-        }
+        app.showOrb = { visible in visible ? panel.orderFrontRegardless() : panel.orderOut(nil) }
+        app.setOrb(Prefs.orbVisible && !Prefs.orbOnlyWhenActive)
+        KeyboardShortcuts.onKeyUp(for: .talk) { [app] in app.hotkey() }
+        KeyboardShortcuts.onKeyUp(for: .toggleOrb) { [app] in app.setOrb(!app.orbShown, remember: true) }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -77,7 +73,7 @@ struct MenuContent: View {
         Button("Apri la daily di oggi") {
             openObsidian(Prefs.vaultPath + "/00-Inbox/daily/\(Date.now.formatted(.iso8601.year().month().day())).md")
         }
-        Button(Prefs.orbVisible ? "Nascondi orb" : "Mostra orb") { app.setOrbVisible?(!Prefs.orbVisible) }
+        Button(app.orbShown ? "Nascondi orb  ⌥⇧Space" : "Mostra orb  ⌥⇧Space") { app.setOrb(!app.orbShown, remember: true) }
         Button("Nuova sessione") { app.newSession() }
         Button("Apri log") { NSWorkspace.shared.open(Log.dir) }
         Divider()

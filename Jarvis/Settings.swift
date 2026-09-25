@@ -2,10 +2,12 @@ import SwiftUI
 import AVFoundation
 import KeyboardShortcuts
 import ServiceManagement
+import TTSKit
 
 struct SettingsView: View {
     let app: AppState
     @AppStorage("orbHex") private var orbHex = "#3FD8FF"
+    @AppStorage("orbOnlyWhenActive") private var orbOnlyWhenActive = false
     @AppStorage("voiceID") private var voiceID = ""
     @AppStorage("speechRate") private var speechRate = 0.5
     @AppStorage("vaultPath") private var vaultPath = ""
@@ -26,16 +28,22 @@ struct SettingsView: View {
             }
             Section("Voce") {
                 Picker("Voce", selection: $voiceID) {
-                    Text("Automatica (Luca migliore disponibile)").tag("")
-                    ForEach(voices, id: \.identifier) { v in Text("\(v.name) · \(quality(v))").tag(v.identifier) }
+                    Text("Eric · neurale (consigliata)").tag("")
+                    ForEach(Qwen3Speaker.allCases.filter { $0 != .eric }, id: \.self) { v in
+                        Text("\(v.rawValue.capitalized) · neurale").tag("tts:\(v.rawValue)")
+                    }
+                    Divider()
+                    ForEach(voices, id: \.identifier) { v in Text("\(v.name) · sistema \(quality(v))").tag(v.identifier) }
                 }
-                Slider(value: $speechRate, in: 0.3...0.7) { Text("Velocità") }
+                Slider(value: $speechRate, in: 0.3...0.7) { Text("Velocità (solo voci di sistema)") }
                 Button("Prova") { app.speaker.stop(); app.speaker.say("Ciao, sono Jarvis. Dimmi pure.") }
-                Text("Voci Premium: Impostazioni di Sistema › Accessibilità › Contenuti letti ad alta voce › Voce di sistema › Gestisci voci.")
+                Text("Le voci neurali (Qwen3-TTS) girano in locale; al primo avvio il modello si scarica e compila per qualche minuto, intanto parla la voce di sistema.")
                     .font(.caption).foregroundStyle(.secondary)
             }
             Section("Orb") {
                 ColorPicker("Colore", selection: Binding(get: { Color(hex: orbHex) }, set: { orbHex = $0.hex }), supportsOpacity: false)
+                KeyboardShortcuts.Recorder("Mostra / nascondi orb", name: .toggleOrb)
+                Toggle("Mostra l'orb solo quando parlo con Jarvis", isOn: $orbOnlyWhenActive)
             }
             Section("Vault e runtime") {
                 HStack {

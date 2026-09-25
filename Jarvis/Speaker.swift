@@ -1,13 +1,25 @@
 import AVFoundation
+import TTSKit
 
-/// Sentence-by-sentence TTS. AVSpeechSynthesizer.write() renders PCM that we play through our own engine,
-/// so the orb can run an FFT on the real voice.
+/// Lock-protected flag readable from TTSKit's background callback.
+private final class CancelFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _on = false
+    var on: Bool { lock.withLock { _on } }
+    func set() { lock.withLock { _on = true } }
+}
+
+/// Sentence-by-sentence TTS through our own AVAudioEngine, so the orb can run an FFT on the real voice.
+/// Neural voice: TTSKit (Qwen3-TTS 1.7B, local). Fallback while it loads, or by choice: AVSpeechSynthesizer.write().
 @MainActor final class Speaker {
     var onIdle: (() -> Void)?
     var onStart: (() -> Void)?
     let levels = Levels()
 
     private let synth = AVSpeechSynthesizer()
+    private var tts: TTSKit?
+    private var cancel = CancelFlag()
+    private var chunk: [Float] = []   // pre-buffer so the first frames don't underrun
     private let engine = AVAudioEngine()
     private let player = AVAudioPlayerNode()
     private var connectedFormat: AVAudioFormat?
@@ -62,8 +74,22 @@ import AVFoundation
 
     func say(_ text: String) { enqueue(text) }
 
+    /// Loads the neural voice (first run: ~2 GB download + Neural Engine compile, a few minutes).
+    func loadNeuralVoice() async {
+        let base = FileManager.default.homeDirectoryForCurrentUser.appending(path: "Library/Application Support/Jarvis/models")
+        do {
+            let kit = try await TTSKit(TTSKitConfig(model: .qwen3TTS_1_7b, downloadBase: base, verbose: false))
+            try await kit.loadModels()
+            tts = kit
+            Log.write("TTSKit pronto")
+        } catch {
+            Log.write("TTSKit non disponibile, uso la voce di sistema: \(error)")
+        }
+    }
+
     func stop() {
         generation += 1
+        cancel.set(); cancel = CancelFlag(); chunk = []
         queue.removeAll()
         synth.stopSpeaking(at: .immediate)
         player.stop()
@@ -88,7 +114,9 @@ import AVFoundation
     private func renderNext() {
         guard !rendering, !queue.isEmpty else { return }
         rendering = true
-        let utterance = AVSpeechUtterance(string: queue.removeFirst())
+        let text = queue.removeFirst()
+        if let tts, let speaker = Self.neuralSpeaker() { return renderNeural(text, tts: tts, speaker: speaker) }
+        let utterance = AVSpeechUtterance(string: text)
         utterance.voice = Self.voice()
         utterance.rate = Float(Prefs.speechRate) * (AVSpeechUtteranceMaximumSpeechRate - AVSpeechUtteranceMinimumSpeechRate) + AVSpeechUtteranceMinimumSpeechRate
         let gen = generation
@@ -96,6 +124,42 @@ import AVFoundation
             guard let pcm = buffer as? AVAudioPCMBuffer else { return }
             Task { @MainActor in self?.received(pcm, generation: gen) }
         }
+    }
+
+    private func renderNeural(_ text: String, tts: TTSKit, speaker: Qwen3Speaker) {
+        let gen = generation, flag = cancel
+        var options = GenerationOptions()
+        options.instruction = "Parla in italiano con tono calmo, asciutto e professionale."
+        Task {
+            do {
+                _ = try await tts.generate(text: text, speaker: speaker, language: .italian, options: options) { [weak self] step in
+                    let samples = step.audio
+                    Task { @MainActor in self?.receivedNeural(samples, generation: gen) }
+                    return !flag.on
+                }
+            } catch { if !flag.on { Log.write("TTSKit errore: \(error)") } }
+            guard gen == generation else { return }
+            flushChunk(generation: gen)
+            rendering = false
+            renderNext()
+            if !isSpeaking { onIdle?() }
+        }
+    }
+
+    // ponytail: 0.3 s pre-buffer, generation runs ~1.15x realtime on M4 Pro; raise it if you hear gaps
+    private func receivedNeural(_ samples: [Float], generation gen: Int) {
+        guard gen == generation else { return }
+        chunk += samples
+        if chunk.count >= 7_200 { flushChunk(generation: gen) }
+    }
+
+    private func flushChunk(generation gen: Int) {
+        guard !chunk.isEmpty, let format = AVAudioFormat(standardFormatWithSampleRate: 24_000, channels: 1),
+              let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(chunk.count)) else { return }
+        buffer.frameLength = buffer.frameCapacity
+        chunk.withUnsafeBufferPointer { buffer.floatChannelData![0].update(from: $0.baseAddress!, count: $0.count) }
+        chunk = []
+        received(buffer, generation: gen)
     }
 
     private func received(_ pcm: AVAudioPCMBuffer, generation gen: Int) {
@@ -133,7 +197,13 @@ import AVFoundation
         return out
     }
 
-    /// Chosen voice, else best Italian "Luca", else best Italian voice.
+    /// voiceID "" = neural Eric; "tts:<name>" = another neural voice; anything else = a system voice identifier.
+    static func neuralSpeaker() -> Qwen3Speaker? {
+        guard let id = Prefs.voiceID else { return .eric }
+        return id.hasPrefix("tts:") ? Qwen3Speaker(rawValue: String(id.dropFirst(4))) : nil
+    }
+
+    /// System voice: chosen one, else best Italian "Luca", else best Italian voice.
     static func voice() -> AVSpeechSynthesisVoice? {
         if let id = Prefs.voiceID, let v = AVSpeechSynthesisVoice(identifier: id) { return v }
         let italian = AVSpeechSynthesisVoice.speechVoices().filter { $0.language == "it-IT" }

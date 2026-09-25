@@ -9,6 +9,7 @@
 /* Begin PBXBuildFile section */
 		A10000000000000000000101 /* WhisperKit in Frameworks */ = {isa = PBXBuildFile; productRef = A10000000000000000000301 /* WhisperKit */; };
 		A10000000000000000000102 /* KeyboardShortcuts in Frameworks */ = {isa = PBXBuildFile; productRef = A10000000000000000000302 /* KeyboardShortcuts */; };
+		A10000000000000000000103 /* TTSKit in Frameworks */ = {isa = PBXBuildFile; productRef = A10000000000000000000303 /* TTSKit */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -30,6 +31,7 @@
 			files = (
 				A10000000000000000000101 /* WhisperKit in Frameworks */,
 				A10000000000000000000102 /* KeyboardShortcuts in Frameworks */,
+				A10000000000000000000103 /* TTSKit in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -75,6 +77,7 @@
 			packageProductDependencies = (
 				A10000000000000000000301 /* WhisperKit */,
 				A10000000000000000000302 /* KeyboardShortcuts */,
+				A10000000000000000000303 /* TTSKit */,
 			);
 			productName = Jarvis;
 			productReference = A10000000000000000000001 /* Jarvis.app */;
@@ -286,6 +289,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = A10000000000000000000202 /* XCRemoteSwiftPackageReference "KeyboardShortcuts" */;
 			productName = KeyboardShortcuts;
+		};
+		A10000000000000000000303 /* TTSKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = A10000000000000000000201 /* XCRemoteSwiftPackageReference "WhisperKit" */;
+			productName = TTSKit;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};
