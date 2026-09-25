@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<title>Jarvis orb 3D</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #05020a; overflow: hidden; font-family: "SF Mono", Menlo, monospace; color: #d9c6ff; }
+  #ui { position: fixed; left: 16px; bottom: 16px; display: flex; gap: 8px; flex-wrap: wrap; z-index: 2; }
+  #ui button { background: rgba(60,20,110,.35); color: #e6d8ff; border: 1px solid #7a4dd6; padding: 6px 12px; font: inherit; font-size: 12px; cursor: pointer; }
+  #ui button.on { background: #7a4dd6; color: #fff; }
+  #caption { position: fixed; left: 50%; bottom: 70px; transform: translateX(-50%); font-size: 15px; color: #f1e8ff; text-shadow: 0 0 10px #a066ff; white-space: nowrap; z-index: 2; }
+  #hint { position: fixed; top: 14px; left: 16px; font-size: 11px; opacity: .6; z-index: 2; }
+</style>
+</head>
+<body>
+<div id="hint">Prototipo del look · trascina per ruotare · gli stati simulano la voce</div>
+<div id="caption">«Hai tre meeting oggi, il primo alle dieci.»</div>
+<div id="ui">
+  <button data-s="idle">Idle</button>
+  <button data-s="listening">Ascolto</button>
+  <button data-s="thinking">Pensa</button>
+  <button data-s="speaking" class="on">Parla</button>
+</div>
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+} }
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+
+const VIOLET = new THREE.Color('#9b5cff'), LILAC = new THREE.Color('#d4b8ff'), CORE = new THREE.Color('#f3eaff'), DEEP = new THREE.Color('#5a24c9');
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+document.body.appendChild(renderer.domElement);
+const scene = new THREE.Scene();
+scene.fog = new THREE.FogExp2(0x05020a, 0.05);
+const camera = new THREE.PerspectiveCamera(55, innerWidth / innerHeight, 0.1, 100);
+camera.position.set(0, 0, 6.2);
+
+const composer = new EffectComposer(renderer);
+composer.addPass(new RenderPass(scene, camera));
+const bloom = new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), 1.6, 0.9, 0.02);
+composer.addPass(bloom);
+
+const orb = new THREE.Group(); scene.add(orb);
+const add = (o) => (orb.add(o), o);
+const lineMat = (color, opacity) => new THREE.LineBasicMaterial({ color, transparent: true, opacity, blending: THREE.AdditiveBlending, depthWrite: false });
+const rnd = (a, b) => a + Math.random() * (b - a);
+
+// Arc on a circle of radius r, from angle a0 to a1, in the XY plane.
+function arcPoints(r, a0, a1, n = 64) {
+  const pts = [];
+  for (let i = 0; i <= n; i++) { const a = a0 + (a1 - a0) * i / n; pts.push(new THREE.Vector3(Math.cos(a) * r, Math.sin(a) * r, 0)); }
+  return pts;
+}
+const lineFrom = (pts, mat) => new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), mat);
+
+// 1. Tilted rings made of broken arcs, each spinning on its own axis.
+const rings = [];
+for (let i = 0; i < 12; i++) {
+  const g = new THREE.Group();
+  const r = rnd(1.2, 3.6);
+  let a = rnd(0, Math.PI * 2);
+  while (a < Math.PI * 2 + 1) {
+    const len = rnd(0.2, 1.4);
+    g.add(lineFrom(arcPoints(r, a, a + len, 40), lineMat(i % 2 ? VIOLET : LILAC, rnd(0.4, 0.9))));
+    a += len + rnd(0.05, 0.5);
+  }
+  // thick band segment for the "reactor" feel
+  if (i < 4) {
+    const band = new THREE.Mesh(new THREE.TorusGeometry(r, 0.025, 6, 120, rnd(1, 2.5)),
+      new THREE.MeshBasicMaterial({ color: VIOLET, transparent: true, opacity: 0.8, blending: THREE.AdditiveBlending }));
+    g.add(band);
+  }
+  g.rotation.set(rnd(0, Math.PI), rnd(0, Math.PI), 0);
+  rings.push({ g, speed: rnd(-0.4, 0.4) || 0.2, axis: new THREE.Vector3(rnd(-1, 1), rnd(-1, 1), rnd(-1, 1)).normalize() });
+  add(g);
+}
+
+// 1b. HUD tick rings: short radial marks around a circle.
+for (const [R, n, len] of [[3.9, 180, 0.08], [2.1, 90, 0.12], [3.3, 60, 0.2]]) {
+  const pts = [];
+  for (let i = 0; i < n; i++) { const a = i / n * Math.PI * 2, l = i % 5 ? len : len * 2.2;
+    pts.push(new THREE.Vector3(Math.cos(a) * R, Math.sin(a) * R, 0), new THREE.Vector3(Math.cos(a) * (R + l), Math.sin(a) * (R + l), 0)); }
+  const ticks = new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints(pts), lineMat(LILAC, 0.55));
+  ticks.rotation.set(rnd(-0.6, 0.6), rnd(-0.6, 0.6), 0);
+  rings.push({ g: ticks, speed: rnd(0.1, 0.3) * (Math.random() < .5 ? -1 : 1), axis: new THREE.Vector3(0, 0, 1) });
+  add(ticks);
+}
+
+// 2. Wireframe shell: partial meridians + latitude lines.
+const shell = new THREE.Group();
+for (let i = 0; i < 14; i++) {
+  const m = lineFrom(arcPoints(2.6, rnd(0, 3), rnd(3, 6.3), 80), lineMat(VIOLET, 0.35));
+  m.rotation.y = (i / 14) * Math.PI; shell.add(m);
+}
+for (let i = 1; i < 6; i++) {
+  const y = -2.6 + i * (5.2 / 6), r = Math.sqrt(2.6 * 2.6 - y * y);
+  const l = lineFrom(arcPoints(r, 0, Math.PI * 2, 96), lineMat(VIOLET, 0.22));
+  l.rotation.x = Math.PI / 2; l.position.y = y; shell.add(l);
+}
+add(shell);
+
+// 3. Spokes radiating from the core.
+const spokes = new THREE.Group();
+for (let i = 0; i < 40; i++) {
+  const d = new THREE.Vector3(rnd(-1, 1), rnd(-1, 1), rnd(-1, 1)).normalize();
+  spokes.add(lineFrom([d.clone().multiplyScalar(0.5), d.clone().multiplyScalar(rnd(2.5, 4.5))], lineMat(LILAC, rnd(0.15, 0.45))));
+}
+add(spokes);
+
+// 4. Circuit traces: manhattan-ish polylines projected on a sphere.
+const traces = new THREE.Group();
+for (let i = 0; i < 220; i++) {
+  let lat = rnd(-1.2, 1.2), lon = rnd(0, Math.PI * 2);
+  const R = rnd(2.7, 3.4), pts = [];
+  for (let s = 0; s < 4 + (Math.random()*10|0); s++) {
+    pts.push(new THREE.Vector3(R * Math.cos(lat) * Math.cos(lon), R * Math.sin(lat), R * Math.cos(lat) * Math.sin(lon)));
+    if (Math.random() < 0.5) lon += rnd(-0.25, 0.25); else lat += rnd(-0.2, 0.2);
+  }
+  traces.add(lineFrom(pts, lineMat(Math.random() < .3 ? LILAC : VIOLET, rnd(0.4, 1))));
+}
+add(traces);
+
+// 5. Core: glowing tunnel of stacked rings + bright center.
+const core = new THREE.Group();
+for (let i = 0; i < 8; i++) {
+  const t = new THREE.Mesh(new THREE.TorusGeometry(0.35 + i * 0.07, 0.012, 8, 80),
+    new THREE.MeshBasicMaterial({ color: i < 3 ? CORE : LILAC, transparent: true, opacity: 1 - i * 0.1, blending: THREE.AdditiveBlending }));
+  t.position.z = -i * 0.12; core.add(t);
+}
+const heart = new THREE.Mesh(new THREE.SphereGeometry(0.22, 32, 32), new THREE.MeshBasicMaterial({ color: CORE }));
+core.add(heart);
+scene.add(core); // core faces the camera, doesn't tumble with the shell
+
+// 6. Bokeh / dust particles.
+const N = 3500, pos = new Float32Array(N * 3), size = new Float32Array(N);
+for (let i = 0; i < N; i++) {
+  const d = new THREE.Vector3(rnd(-1, 1), rnd(-1, 1), rnd(-1, 1)).normalize().multiplyScalar(Math.pow(Math.random(), 0.5) * 4.2);
+  pos.set([d.x, d.y, d.z], i * 3); size[i] = Math.random() < 0.04 ? rnd(14, 28) : rnd(1.5, 5);
+}
+const pGeo = new THREE.BufferGeometry();
+pGeo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+pGeo.setAttribute('size', new THREE.BufferAttribute(size, 1));
+const pMat = new THREE.ShaderMaterial({
+  uniforms: { color: { value: LILAC }, level: { value: 0 } },
+  vertexShader: `attribute float size; uniform float level; varying float vA;
+    void main(){ vec4 mv = modelViewMatrix * vec4(position,1.); gl_PointSize = size * (1. + level) * (6. / -mv.z); vA = size > 10. ? .25 : .9; gl_Position = projectionMatrix * mv; }`,
+  fragmentShader: `uniform vec3 color; varying float vA;
+    void main(){ float d = length(gl_PointCoord - .5); if (d > .5) discard; gl_FragColor = vec4(color, vA * smoothstep(.5, .0, d)); }`,
+  transparent: true, blending: THREE.AdditiveBlending, depthWrite: false,
+});
+const particles = new THREE.Points(pGeo, pMat); add(particles);
+
+// States: how "voice level" and motion behave.
+let state = 'speaking';
+const cfg = {
+  idle:      { spin: 0.25, bloom: 1.0, level: () => 0.05 },
+  listening: { spin: 0.5,  bloom: 1.3, level: (t) => 0.3 + 0.3 * Math.abs(Math.sin(t * 7)) * Math.abs(Math.sin(t * 2.3)) },
+  thinking:  { spin: 1.8,  bloom: 1.5, level: (t) => 0.25 + 0.1 * Math.sin(t * 3) },
+  speaking:  { spin: 0.7,  bloom: 1.7, level: (t) => 0.2 + 0.6 * Math.abs(Math.sin(t * 9) * Math.sin(t * 3.7)) },
+};
+document.querySelectorAll('#ui button').forEach((b) => b.onclick = () => {
+  state = b.dataset.s;
+  document.querySelectorAll('#ui button').forEach((x) => x.classList.toggle('on', x === b));
+  document.getElementById('caption').style.opacity = state === 'speaking' ? 1 : 0;
+});
+
+// Drag to rotate.
+let drag = null, rotX = 0.3, rotY = 0;
+addEventListener('pointerdown', (e) => drag = { x: e.clientX, y: e.clientY, rx: rotX, ry: rotY });
+addEventListener('pointerup', () => drag = null);
+addEventListener('pointermove', (e) => { if (drag) { rotY = drag.ry + (e.clientX - drag.x) * 0.005; rotX = drag.rx + (e.clientY - drag.y) * 0.005; } });
+addEventListener('resize', () => { camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix(); renderer.setSize(innerWidth, innerHeight); composer.setSize(innerWidth, innerHeight); });
+
+const clock = new THREE.Clock(); let level = 0;
+renderer.setAnimationLoop(() => {
+  const dt = clock.getDelta(), t = clock.elapsedTime, c = cfg[state];
+  level += (c.level(t) - level) * 0.2;
+  for (const r of rings) r.g.rotateOnAxis(r.axis, r.speed * c.spin * dt);
+  shell.rotation.y += 0.05 * c.spin * dt;
+  traces.rotation.y -= 0.08 * c.spin * dt;
+  particles.rotation.y += 0.03 * dt;
+  if (!drag) rotY += 0.04 * dt;
+  orb.rotation.set(rotX, rotY, 0);
+  orb.scale.setScalar(1 + level * 0.08);
+  core.scale.setScalar(1 + level * 0.6);
+  core.children.forEach((m, i) => m.rotation.z = t * (0.5 + i * 0.2) * (i % 2 ? -1 : 1));
+  pMat.uniforms.level.value = level;
+  bloom.strength = c.bloom + level * 1.2;
+  composer.render();
+});
+</script>
+</body>
+</html>
