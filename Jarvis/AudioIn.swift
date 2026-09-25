@@ -56,6 +56,7 @@ final class Spectrum {
     var onPartial: ((String) -> Void)?
     var onFinal: ((String) -> Void)?   // empty string = nothing heard
     var onStatus: ((String) -> Void)?
+    var onTranscribing: (() -> Void)?  // listening ended with speech, final decode started
     let levels = Levels()
 
     private var whisper: WhisperKit?
@@ -75,9 +76,10 @@ final class Spectrum {
 
     func loadModel() async {
         let base = FileManager.default.homeDirectoryForCurrentUser.appending(path: "Library/Application Support/Jarvis/models")
-        onStatus?("Carico il modello vocale… (la prima volta scarica circa 1,6 GB)")
+        onStatus?("Preparo il modello vocale… la prima volta scarica 1,6 GB e lo compila per il Neural Engine (qualche minuto).")
         do {
-            whisper = try await WhisperKit(WhisperKitConfig(model: "large-v3-v20240930_turbo", downloadBase: base, verbose: false))
+            // load + prewarm here, otherwise WhisperKit loads lazily on the first utterance (minutes on first run).
+            whisper = try await WhisperKit(WhisperKitConfig(model: "large-v3-v20240930_turbo", downloadBase: base, verbose: false, prewarm: true, load: true))
             onStatus?("")
             Log.write("WhisperKit pronto")
         } catch {
@@ -136,6 +138,7 @@ final class Spectrum {
         let audio = samples; samples = []
         Log.write("ascolto: fine, \(String(format: "%.1f", Double(audio.count) / 16_000)) s, voce \(speechStarted ? "sì" : "no"), picco RMS \(String(format: "%.4f", peakRMS)) (soglia \(speechRMS))")
         guard transcribe, speechStarted else { if transcribe { onFinal?("") }; return }
+        onTranscribing?()
         Task {
             while transcribing { try? await Task.sleep(for: .milliseconds(30)) } // one decode at a time
             onFinal?(await run(audio))

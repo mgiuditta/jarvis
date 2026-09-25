@@ -65,12 +65,24 @@ struct OverlayView: View {
         .animation(.spring(duration: 0.35), value: orbSize)
     }
 
+    private var hint: String? {
+        switch app.state {
+        case .listening: "Ti ascolto… fai una pausa o premi ⌥Space per finire"
+        case .thinking: app.transcribing ? "Trascrivo…" : "Ci penso…"
+        default: nil
+        }
+    }
+
     private var orbSize: CGFloat { app.state == .idle && !dropTargeted ? 72 : 120 }
     private var needsMic: Bool { AVCaptureDevice.authorizationStatus(for: .audio) != .authorized }
 
     private var card: some View {
         VStack(alignment: .leading, spacing: 10) {
             if needsMic || !app.modelReady { Onboarding(app: app) }
+            if let hint {
+                Label(hint, systemImage: app.state == .listening ? "waveform" : "ellipsis")
+                    .font(.callout.weight(.medium)).foregroundStyle(.tint)
+            }
             if !app.transcript.isEmpty {
                 Text(app.transcript).font(.callout).foregroundStyle(.secondary).lineLimit(3)
             }

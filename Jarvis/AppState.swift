@@ -22,6 +22,7 @@ struct RecentCommand: Identifiable, Codable {
     var confirmation: (id: String, question: String)?
     var status = ""
     var expanded = false
+    var transcribing = false
     var recent: [RecentCommand] = (try? JSONDecoder().decode([RecentCommand].self, from: UserDefaults.standard.data(forKey: "recent") ?? Data())) ?? []
 
     @ObservationIgnored let audio = AudioIn()
@@ -39,6 +40,7 @@ struct RecentCommand: Identifiable, Codable {
         audio.onPartial = { [weak self] in self?.transcript = $0 }
         audio.onFinal = { [weak self] in self?.heard($0) }
         audio.onStatus = { [weak self] in self?.status = $0 }
+        audio.onTranscribing = { [weak self] in self?.transcribing = true; self?.state = .thinking }
         speaker.onStart = { [weak self] in
             guard let self, self.state != .confirm, self.state != .listening else { return }
             self.state = .speaking
@@ -54,6 +56,7 @@ struct RecentCommand: Identifiable, Codable {
     /// Hotkey: start listening; again while listening = done talking; while speaking = barge in.
     func hotkey() {
         Log.write("hotkey (stato \(state.rawValue))")
+        if transcribing { return }  // wait for the current utterance
         switch state {
         case .listening: audio.stop()
         case .speaking: speaker.stop(); listen()
@@ -71,8 +74,14 @@ struct RecentCommand: Identifiable, Codable {
     }
 
     private func heard(_ text: String) {
+        transcribing = false
         state = restingState
-        guard !text.isEmpty else { return Log.write("trascrizione vuota") }
+        guard !text.isEmpty else {
+            Log.write("trascrizione vuota")
+            transcript = ""; status = "Non ho sentito niente."
+            return scheduleCollapse()
+        }
+        status = ""
         transcript = text
         Log.write("utente: \(text)")
         let intent = Intent.route(text)
