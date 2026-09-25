@@ -1,0 +1,5 @@
+agent/node_modules/
+build/
+xcuserdata/
+*.xcuserstate
+.DS_Store
