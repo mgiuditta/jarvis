@@ -11,9 +11,12 @@ import { confirmQuestion } from './policy.mjs';
 const VAULT = process.env.JARVIS_VAULT ?? process.cwd();
 const STATE = process.env.JARVIS_STATE ?? path.join(os.homedir(), 'Library/Application Support/Jarvis/session.json');
 fs.mkdirSync(path.dirname(STATE), { recursive: true });
-const STYLE = `Sei Jarvis, l'assistente vocale del secondo cervello. Rispondi in italiano, dai del tu, tono asciutto.
+const style = () => `Sei Jarvis, l'assistente vocale del secondo cervello. Rispondi in italiano, dai del tu, tono asciutto.
 La risposta viene letta ad alta voce fino alla prima riga vuota: apri con al massimo due frasi brevi, senza markdown né elenchi.
-Dettagli, liste e link vanno dopo una riga vuota: verranno solo mostrati a schermo.`;
+Dettagli, liste e link vanno dopo una riga vuota: verranno solo mostrati a schermo.
+L'utente detta con Wispr Flow: il testo può avere piccoli errori di trascrizione, interpreta nomi e termini con buon senso.
+Il piano di oggi è in 00-Inbox/daily/${today()}.md: leggilo quando serve contesto sulla giornata.
+Per le richieste ricorrenti usa le skill del vault (es. prep-day, close-day, ingest, decision, pull-tickets, pull-mrs, pull-teams, weekly).`;
 
 const send = (o) => process.stdout.write(JSON.stringify(o) + '\n');
 const today = () => new Date().toLocaleDateString('sv'); // YYYY-MM-DD, local time
@@ -58,7 +61,7 @@ function start() {
       resume: saved?.day === day ? saved.id : undefined,
       settingSources: ['user', 'project', 'local'],
       includePartialMessages: true,
-      systemPrompt: { type: 'preset', preset: 'claude_code', append: STYLE },
+      systemPrompt: { type: 'preset', preset: 'claude_code', append: style() },
       pathToClaudeCodeExecutable: process.env.JARVIS_CLAUDE || undefined,
       // Tools the vault settings don't pre-allow. Voice confirmation is only for destructive actions
       // (PreToolUse hook below); settings "deny" rules still apply before this is called.

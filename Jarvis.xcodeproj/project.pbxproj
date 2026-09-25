@@ -7,9 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		A10000000000000000000101 /* WhisperKit in Frameworks */ = {isa = PBXBuildFile; productRef = A10000000000000000000301 /* WhisperKit */; };
 		A10000000000000000000102 /* KeyboardShortcuts in Frameworks */ = {isa = PBXBuildFile; productRef = A10000000000000000000302 /* KeyboardShortcuts */; };
-		A10000000000000000000103 /* TTSKit in Frameworks */ = {isa = PBXBuildFile; productRef = A10000000000000000000303 /* TTSKit */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -29,9 +27,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				A10000000000000000000101 /* WhisperKit in Frameworks */,
 				A10000000000000000000102 /* KeyboardShortcuts in Frameworks */,
-				A10000000000000000000103 /* TTSKit in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -75,9 +71,7 @@
 			);
 			name = Jarvis;
 			packageProductDependencies = (
-				A10000000000000000000301 /* WhisperKit */,
 				A10000000000000000000302 /* KeyboardShortcuts */,
-				A10000000000000000000303 /* TTSKit */,
 			);
 			productName = Jarvis;
 			productReference = A10000000000000000000001 /* Jarvis.app */;
@@ -103,7 +97,6 @@
 			mainGroup = A10000000000000000000010;
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
-				A10000000000000000000201 /* XCRemoteSwiftPackageReference "WhisperKit" */,
 				A10000000000000000000202 /* XCRemoteSwiftPackageReference "KeyboardShortcuts" */,
 			);
 			preferredProjectObjectVersion = 77;
@@ -140,7 +133,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "# Copies agent/ (bridge + node_modules) into Resources/agent before code signing.\nset -e\nif [ ! -d \"$SRCROOT/agent/node_modules\" ]; then echo \"error: run Scripts/install.sh (npm install in agent/) first\"; exit 1; fi\nrsync -a --delete --exclude '*.test.mjs' \"$SRCROOT/agent/\" \"$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/agent/\"\n";
+			shellScript = "# Copies agent/ (bridge + node_modules) and orb/ (3D orb web page) into Resources before code signing.\nset -e\nif [ ! -d \"$SRCROOT/agent/node_modules\" ]; then echo \"error: run Scripts/install.sh (npm install in agent/) first\"; exit 1; fi\nrsync -a --delete --exclude '*.test.mjs' \"$SRCROOT/agent/\" \"$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/agent/\"\nrsync -a --delete \"$SRCROOT/orb/\" \"$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/orb/\"\n";
 		};
 /* End PBXShellScriptBuildPhase section */
 
@@ -198,7 +191,6 @@
 				INFOPLIST_KEY_CFBundleDisplayName = Jarvis;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.productivity";
 				INFOPLIST_KEY_LSUIElement = YES;
-				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Jarvis ascolta la tua voce solo mentre è attivo (⌥Space). L'audio non viene salvato.";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
@@ -225,7 +217,6 @@
 				INFOPLIST_KEY_CFBundleDisplayName = Jarvis;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.productivity";
 				INFOPLIST_KEY_LSUIElement = YES;
-				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Jarvis ascolta la tua voce solo mentre è attivo (⌥Space). L'audio non viene salvato.";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
@@ -261,14 +252,6 @@
 /* End XCConfigurationList section */
 
 /* Begin XCRemoteSwiftPackageReference section */
-		A10000000000000000000201 /* XCRemoteSwiftPackageReference "WhisperKit" */ = {
-			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/argmaxinc/WhisperKit";
-			requirement = {
-				kind = upToNextMinorVersion;
-				minimumVersion = 1.1.0;
-			};
-		};
 		A10000000000000000000202 /* XCRemoteSwiftPackageReference "KeyboardShortcuts" */ = {
 			isa = XCRemoteSwiftPackageReference;
 			repositoryURL = "https://github.com/sindresorhus/KeyboardShortcuts";
@@ -280,20 +263,10 @@
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
-		A10000000000000000000301 /* WhisperKit */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = A10000000000000000000201 /* XCRemoteSwiftPackageReference "WhisperKit" */;
-			productName = WhisperKit;
-		};
 		A10000000000000000000302 /* KeyboardShortcuts */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = A10000000000000000000202 /* XCRemoteSwiftPackageReference "KeyboardShortcuts" */;
 			productName = KeyboardShortcuts;
-		};
-		A10000000000000000000303 /* TTSKit */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = A10000000000000000000201 /* XCRemoteSwiftPackageReference "WhisperKit" */;
-			productName = TTSKit;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

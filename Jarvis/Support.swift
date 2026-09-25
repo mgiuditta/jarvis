@@ -35,7 +35,8 @@ enum Prefs {
     static var vaultPath: String { d.string(forKey: "vaultPath").nonEmpty ?? home + "/Dev/sbu-brain" }
     static var nodePath: String { d.string(forKey: "nodePath").nonEmpty ?? defaultNode() }
     static var claudePath: String { d.string(forKey: "claudePath").nonEmpty ?? home + "/.local/bin/claude" }
-    static var orbHex: String { d.string(forKey: "orbHex").nonEmpty ?? "#3FD8FF" }
+    static var orbHex: String { d.string(forKey: "orbColor").nonEmpty ?? "#9B5CFF" }
+    static var muted: Bool { d.bool(forKey: "muted") }
     static var voiceID: String? { d.string(forKey: "voiceID").nonEmpty }
     static var speechRate: Double { d.object(forKey: "speechRate") as? Double ?? 0.5 }
     static var orbVisible: Bool { d.object(forKey: "orbVisible") as? Bool ?? true }

@@ -40,6 +40,7 @@ struct JarvisApp: App {
         let panel = OverlayPanel(app: app)
         self.panel = panel
         app.showOrb = { visible in visible ? panel.orderFrontRegardless() : panel.orderOut(nil) }
+        app.activate = { NSApp.activate(); panel.makeKeyAndOrderFront(nil) }
         app.setOrb(Prefs.orbVisible && !Prefs.orbOnlyWhenActive)
         KeyboardShortcuts.onKeyUp(for: .talk) { [app] in app.hotkey() }
         KeyboardShortcuts.onKeyUp(for: .toggleOrb) { [app] in app.setOrb(!app.orbShown, remember: true) }
@@ -117,6 +118,8 @@ struct MenuContent: View {
             openObsidian(Prefs.vaultPath + "/00-Inbox/daily/\(Date.now.formatted(.iso8601.year().month().day())).md")
         }
         Button(app.orbShown ? "Nascondi orb  ⌥⇧Space" : "Mostra orb  ⌥⇧Space") { app.setOrb(!app.orbShown, remember: true) }
+        Button("Apri la sessione in Terminale") { Terminal.resumeSession() }
+            .help("Stessa conversazione di Jarvis: non usarli tutti e due nello stesso momento")
         Button("Nuova sessione") { app.newSession() }
         Button("Apri log") { NSWorkspace.shared.open(Log.dir) }
         Divider()
@@ -126,8 +129,8 @@ struct MenuContent: View {
 
     private var statusLine: String {
         switch app.state {
-        case .idle: app.modelReady ? "● Pronto" : "○ Carico il modello vocale…"
-        case .listening: "● In ascolto"
+        case .idle: "● Pronto"
+        case .listening: "● Aspetto la dettatura"
         case .thinking: "● Sta pensando"
         case .speaking: "● Sta parlando"
         case .confirm: "● Attende conferma"
@@ -138,5 +141,24 @@ struct MenuContent: View {
     private func openObsidian(_ path: String) {
         let encoded = path.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed.subtracting(CharacterSet(charactersIn: "&=?/"))) ?? path
         if let url = URL(string: "obsidian://open?path=\(encoded)") { NSWorkspace.shared.open(url) }
+    }
+}
+
+/// Opens today's Jarvis session in Terminal via a .command file (no Automation permission needed).
+enum Terminal {
+    static func resumeSession() {
+        let support = URL(fileURLWithPath: Prefs.home + "/Library/Application Support/Jarvis")
+        struct Saved: Decodable { let id: String }
+        let saved = (try? Data(contentsOf: support.appending(path: "session.json"))).flatMap { try? JSONDecoder().decode(Saved.self, from: $0) }
+        func q(_ s: String) -> String { "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'" }
+        let resume = saved.map { " --resume " + q($0.id) } ?? ""
+        let script = support.appending(path: "resume.command")
+        do {
+            try "#!/bin/zsh\ncd \(q(Prefs.vaultPath)) && exec \(q(Prefs.claudePath))\(resume)\n".write(to: script, atomically: true, encoding: .utf8)
+            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: script.path)
+            NSWorkspace.shared.open(script)
+        } catch {
+            Log.write("apri in Terminale: \(error)")
+        }
     }
 }

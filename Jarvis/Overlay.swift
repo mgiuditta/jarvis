@@ -1,10 +1,9 @@
 import AppKit
 import SwiftUI
-import AVFoundation
 import ServiceManagement
 
-/// Borderless, non-activating, transparent panel on every Space. Sized to its content,
-/// so clicks outside the orb/card go to the windows behind.
+/// Borderless, transparent panel on every Space. Sized to its content, so clicks outside
+/// the orb/card go to the windows behind. Becomes key so Wispr can type into the input field.
 final class OverlayPanel: NSPanel {
     init(app: AppState) {
         super.init(contentRect: NSRect(x: 0, y: 0, width: 96, height: 96),
@@ -36,28 +35,34 @@ final class OverlayPanel: NSPanel {
         setFrame(r, display: true)
     }
 
+    override var canBecomeKey: Bool { true }
+
     private func isOnScreen(_ r: NSRect) -> Bool { NSScreen.screens.contains { $0.visibleFrame.contains(r) } }
 }
 
 struct OverlayView: View {
     @Bindable var app: AppState
     let onSize: (CGSize) -> Void
-    @AppStorage("orbHex") private var orbHex = "#3FD8FF"
+    @AppStorage("orbColor") private var orbHex = "#9B5CFF"
+    @AppStorage("muted") private var muted = false
     @State private var dropTargeted = false
+    @FocusState private var inputFocused: Bool
 
     var body: some View {
         VStack(alignment: .trailing, spacing: 10) {
-            if app.expanded || !app.modelReady || needsMic {
+            if app.expanded {
                 card.transition(.opacity.combined(with: .move(edge: .bottom)))
             }
-            OrbView(state: app.state, colorHex: orbHex, mic: app.audio.levels, tts: app.speaker.levels)
+            OrbView(state: app.state, colorHex: orbHex, levels: app.speaker.levels)
                 .frame(width: orbSize, height: orbSize)
+                .contentShape(Circle())
+                .gesture(WindowDragGesture())
                 .scaleEffect(dropTargeted ? 1.15 : 1)
                 .dropDestination(for: URL.self) { urls, _ in
                     app.ingest(files: urls.filter(\.isFileURL)); return true
                 } isTargeted: { dropTargeted = $0 }
                 .contextMenu { MenuContent(app: app) }  // menu bar icon can hide behind the notch
-                .help("Jarvis: ⌥Space per parlare, trascina qui un file per /ingest, clic destro per il menu")
+                .help("Jarvis: ⌥Space e detta con Wispr, trascina qui un file per /ingest, clic destro per il menu")
         }
         .padding(8)
         .fixedSize()
@@ -68,22 +73,41 @@ struct OverlayView: View {
 
     private var hint: String? {
         switch app.state {
-        case .listening: "Ti ascolto… fai una pausa o premi ⌥Space per finire"
-        case .thinking: app.transcribing ? "Trascrivo…" : "Ci penso…"
+        case .listening: "Detta con Wispr: invio automatico dopo un secondo · Esc annulla"
+        case .thinking: "Ci penso…"
         default: nil
         }
     }
 
-    private var orbSize: CGFloat { app.state == .idle && !dropTargeted ? 72 : 120 }
-    private var needsMic: Bool { AVCaptureDevice.authorizationStatus(for: .audio) != .authorized }
+    private var orbSize: CGFloat { app.state == .idle && !dropTargeted ? 96 : 260 }
+
+    /// Wispr pastes the whole dictation at once: send when the text has been still for a second.
+    private var input: some View {
+        TextField(app.confirmation == nil ? "Detta con Wispr…" : "⏎ sì · Esc no · o dettalo", text: $app.draft)
+            .textFieldStyle(.plain)
+            .font(.body)
+            .padding(8)
+            .background(.black.opacity(0.25), in: RoundedRectangle(cornerRadius: 8))
+            .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Color(hex: orbHex).opacity(0.6)))
+            .focused($inputFocused)
+            .onAppear { inputFocused = true }
+            .onChange(of: app.focusRequest) { inputFocused = true }
+            .onSubmit { app.submit() }
+            .onExitCommand { app.escape() }
+            .task(id: app.draft) {
+                guard !app.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+                try? await Task.sleep(for: .seconds(1))
+                if !Task.isCancelled { app.submit() }
+            }
+    }
 
     private var card: some View {
         VStack(alignment: .leading, spacing: 10) {
-            if needsMic || !app.modelReady { Onboarding(app: app) }
             if let hint {
                 Label(hint, systemImage: app.state == .listening ? "waveform" : "ellipsis")
-                    .font(.callout.weight(.medium)).foregroundStyle(.tint)
+                    .font(.callout.weight(.medium)).foregroundStyle(Color(hex: orbHex))
             }
+            if app.inputActive { input }
             if !app.transcript.isEmpty {
                 Text(app.transcript).font(.callout).foregroundStyle(.secondary).lineLimit(3)
             }
@@ -97,7 +121,7 @@ struct OverlayView: View {
             if !app.tools.isEmpty {
                 VStack(alignment: .leading, spacing: 3) {
                     ForEach(app.tools.suffix(6)) { t in
-                        Label(t.text, systemImage: t.icon).font(.caption).lineLimit(1).truncationMode(.middle)
+                        Label(t.text, systemImage: t.icon).font(.caption.monospaced()).lineLimit(1).truncationMode(.middle)
                     }
                 }
                 .foregroundStyle(.secondary)
@@ -105,10 +129,13 @@ struct OverlayView: View {
             if let c = app.confirmation {
                 Text(c.question).font(.callout.weight(.semibold)).foregroundStyle(.orange)
                 HStack {
-                    Button("Sì") { app.answerConfirmation(true) }.keyboardShortcut(.defaultAction)
+                    Button("Sì") { app.answerConfirmation(true) }
                     Button("No") { app.answerConfirmation(false) }
                 }
             }
+            Toggle(isOn: $muted) { Label("Muto", systemImage: muted ? "speaker.slash" : "speaker.wave.2") }
+                .toggleStyle(.button).controlSize(.small)
+                .onChange(of: muted) { _, on in if on { app.speaker.stop() } }
             if !app.status.isEmpty {
                 Text(app.status).font(.caption).foregroundStyle(app.state == .error ? .red : .secondary)
             }
@@ -116,47 +143,14 @@ struct OverlayView: View {
         .padding(14)
         .frame(width: 380, alignment: .leading)
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).strokeBorder(.white.opacity(0.12)))
+        .background(Color(red: 0.03, green: 0.01, blue: 0.06).opacity(0.7), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).strokeBorder(Color(hex: orbHex).opacity(0.45)))
+        .shadow(color: Color(hex: orbHex).opacity(0.35), radius: 14)
+        .environment(\.colorScheme, .dark)  // HUD look, same in light mode
     }
 
     private func markdown(_ s: String) -> AttributedString {
         (try? AttributedString(markdown: s, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(s)
-    }
-}
-
-/// First-run steps: microphone, voice model, login item. Accessibility isn't needed (Carbon hotkeys).
-struct Onboarding: View {
-    let app: AppState
-    @State private var mic = AVCaptureDevice.authorizationStatus(for: .audio)
-    @State private var login = SMAppService.mainApp.status == .enabled
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("Configura Jarvis").font(.headline)
-            HStack {
-                Image(systemName: mic == .authorized ? "checkmark.circle.fill" : "mic.circle")
-                Text("Microfono")
-                Spacer()
-                if mic == .notDetermined {
-                    Button("Consenti") {
-                        AVCaptureDevice.requestAccess(for: .audio) { _ in
-                            Task { @MainActor in mic = AVCaptureDevice.authorizationStatus(for: .audio) }
-                        }
-                    }
-                } else if mic != .authorized {
-                    Button("Apri Privacy") {
-                        NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone")!)
-                    }
-                }
-            }
-            HStack {
-                Image(systemName: app.modelReady ? "checkmark.circle.fill" : "arrow.down.circle")
-                Text(app.modelReady ? "Modello vocale pronto" : "Modello vocale in download…")
-            }
-            Toggle("Avvia al login", isOn: $login)
-                .onChange(of: login) { _, on in LoginItem.set(on) }
-        }
-        .font(.callout)
     }
 }
 

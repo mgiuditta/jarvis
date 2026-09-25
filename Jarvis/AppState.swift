@@ -13,35 +13,31 @@ struct RecentCommand: Identifiable, Codable {
     let command: String
 }
 
-/// Orchestrates voice ↔ agent ↔ orb. Everything runs on the main actor.
+/// Orchestrates dictated input (Wispr) ↔ agent ↔ voice/orb. Everything runs on the main actor.
 @MainActor @Observable final class AppState {
     var state: OrbState = .idle
-    var transcript = ""
+    var transcript = ""     // last message sent
+    var draft = ""          // what Wispr is typing into the input field
+    var inputActive = false
+    var focusRequest = 0    // bumped to (re)focus the input field
     var answer = ""
     var tools: [ToolItem] = []
     var confirmation: (id: String, question: String)?
     var status = ""
     var expanded = false
-    var transcribing = false
     var orbShown = false
     var recent: [RecentCommand] = (try? JSONDecoder().decode([RecentCommand].self, from: UserDefaults.standard.data(forKey: "recent") ?? Data())) ?? []
 
-    @ObservationIgnored let audio = AudioIn()
     @ObservationIgnored let speaker = Speaker()
     @ObservationIgnored let agent = AgentClient()
     @ObservationIgnored var showOrb: ((Bool) -> Void)?
+    @ObservationIgnored var activate: (() -> Void)?   // bring Jarvis forward so Wispr types into it
     @ObservationIgnored private var busy = false
     @ObservationIgnored private var lastAnswer = ""
-    @ObservationIgnored private var listenAfterSpeech = false
+    @ObservationIgnored private var previousApp: NSRunningApplication?
     @ObservationIgnored private var collapseTask: Task<Void, Never>?
 
-    var modelReady: Bool { audio.isReady }
-
     init() {
-        audio.onPartial = { [weak self] in self?.transcript = $0 }
-        audio.onFinal = { [weak self] in self?.heard($0) }
-        audio.onStatus = { [weak self] in self?.status = $0 }
-        audio.onTranscribing = { [weak self] in self?.transcribing = true; self?.state = .thinking }
         speaker.onStart = { [weak self] in
             guard let self, self.state != .confirm, self.state != .listening else { return }
             self.state = .speaking
@@ -49,43 +45,54 @@ struct RecentCommand: Identifiable, Codable {
         speaker.onIdle = { [weak self] in self?.speechEnded() }
         agent.onEvent = { [weak self] in self?.handle($0) }
         agent.start()
-        Task {
-            await audio.loadModel()
-            await speaker.loadNeuralVoice()  // after Whisper: don't compile two models at once
-        }
     }
 
     // MARK: input
 
-    /// Hotkey: start listening; again while listening = done talking; while speaking = barge in.
+    /// Hotkey: open the input field; again = send now (or close it if empty). Also barges in on speech.
     func hotkey() {
         Log.write("hotkey (stato \(state.rawValue))")
-        if transcribing { return }  // wait for the current utterance
-        switch state {
-        case .listening: audio.stop()
-        case .speaking: speaker.stop(); listen()
-        default: listen()
-        }
+        guard inputActive else { return listen() }
+        draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? closeInput() : submit()
     }
 
+    /// Shows the input field focused, remembering which app to give focus back to.
     func listen() {
-        guard audio.isReady else { status = "Il modello vocale non è ancora pronto."; expand(); return }
-        listenAfterSpeech = false
-        speaker.stop()  // never record Jarvis's own voice
-        transcript = ""
-        state = .listening
+        speaker.stop()  // don't let Wispr hear Jarvis
+        if let front = NSWorkspace.shared.frontmostApplication, front != .current { previousApp = front }
+        draft = ""
+        inputActive = true
+        if confirmation == nil { state = .listening }
         expand()
-        audio.start()
+        activate?()
+        focusRequest += 1
+    }
+
+    /// ⏎ or auto-send: an empty ⏎ during a confirmation means "sì".
+    func submit() {
+        let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        draft = ""
+        guard !text.isEmpty else { if confirmation != nil { answerConfirmation(true) }; return }
+        closeInput()
+        heard(text)
+    }
+
+    /// Esc: "no" to a confirmation, otherwise close the field.
+    func escape() {
+        if confirmation != nil { draft = ""; return answerConfirmation(false) }
+        closeInput()
+        scheduleCollapse()
+    }
+
+    private func closeInput() {
+        draft = ""
+        inputActive = false
+        if state == .listening { state = restingState }
+        previousApp?.activate()
+        previousApp = nil
     }
 
     private func heard(_ text: String) {
-        transcribing = false
-        state = restingState
-        guard !text.isEmpty else {
-            Log.write("trascrizione vuota")
-            transcript = ""; status = "Non ho sentito niente."
-            return scheduleCollapse()
-        }
         status = ""
         transcript = text
         Log.write("utente: \(text)")
@@ -95,7 +102,7 @@ struct RecentCommand: Identifiable, Codable {
             switch intent {
             case .yes: return answerConfirmation(true)
             case .no, .cancel, .stop: return answerConfirmation(false)
-            default: listenAfterSpeech = true; return say("Dimmi sì o no. \(c.question)")
+            default: listen(); return say("Dimmi sì o no. \(c.question)")  // listen() first: it stops speech
             }
         }
         switch intent {
@@ -108,12 +115,10 @@ struct RecentCommand: Identifiable, Codable {
             say(lastAnswer.isEmpty ? "Non ho ancora detto niente." : Speaker.spokenPart(of: lastAnswer))
         case .clipboard(let ingest, let question):
             clipboard(ingest: ingest, question: question)
-        case .unsupported(let message):
-            say(message)
         case .agent(let command):
             ask(command, label: text)
         case .yes, .no:
-            ask(text, label: text)
+            ask(text, label: text)  // no pending confirmation: just words for Claude
         }
     }
 
@@ -134,6 +139,7 @@ struct RecentCommand: Identifiable, Codable {
         confirmation = nil
         agent.send(["type": "confirm", "id": c.id, "allow": allow])
         tools.append(ToolItem(icon: allow ? "checkmark.circle" : "xmark.circle", text: allow ? "Confermato" : "Rifiutato"))
+        closeInput()
         state = restingState
     }
 
@@ -213,7 +219,7 @@ struct RecentCommand: Identifiable, Codable {
             state = .confirm
             expand()
             speaker.stop()
-            listenAfterSpeech = true
+            listen()  // ⏎ = sì, Esc = no, or dictate it
             say(q)
         case "done":
             busy = false
@@ -222,7 +228,7 @@ struct RecentCommand: Identifiable, Codable {
             if let text = e.text, !text.isEmpty { answer = text }
             Log.write("jarvis: \(Speaker.spokenPart(of: lastAnswer))")
             speaker.finishAnswer(fullText: lastAnswer)
-            if !speaker.isSpeaking { state = restingState; scheduleCollapse() }
+            if !speaker.isSpeaking, state != .listening { state = restingState; scheduleCollapse() }
         case "error":
             busy = false
             confirmation = nil
@@ -244,7 +250,6 @@ struct RecentCommand: Identifiable, Codable {
     }
 
     private func speechEnded() {
-        if listenAfterSpeech { listenAfterSpeech = false; return listen() }
         if state == .speaking || state == .idle { state = restingState }
         if !busy { scheduleCollapse() }
     }
@@ -266,7 +271,7 @@ struct RecentCommand: Identifiable, Codable {
         collapseTask?.cancel()
         collapseTask = Task {
             try? await Task.sleep(for: .seconds(25))
-            guard !Task.isCancelled, state == .idle else { return }
+            guard !Task.isCancelled, state == .idle, !inputActive else { return }
             expanded = false
             if Prefs.orbOnlyWhenActive { setOrb(false) }
         }

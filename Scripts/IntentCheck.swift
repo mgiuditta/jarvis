@@ -2,20 +2,16 @@
 @main struct IntentCheck {
     static func main() {
         let cases: [(String, Intent)] = [
-            ("Ingesta il PDF sul checkout", .agent("/ingest il PDF sul checkout")),
-            ("Jarvis, prepara la giornata.", .agent("/prep-day")),
-            ("chiudi la giornata", .agent("/close-day")),
-            ("Decisione: usiamo Spartacus 2211", .agent("/decision usiamo Spartacus 2211")),
-            ("Sincronizza i ticket della release R.4", .agent("/pull-tickets della release R.4")),
-            ("sincronizza le MR", .agent("/pull-mrs")),
-            ("sincronizza i messaggi", .unsupported("Non ho ancora una skill per i messaggi.")),
-            ("Settimana", .agent("/weekly")),
+            // Commands in plain words go to Claude, which picks the skill.
+            ("Jarvis, prepara la giornata.", .agent("prepara la giornata")),
+            ("sincronizza i messaggi", .agent("sincronizza i messaggi")),
+            ("aggiorna la nota di Mario sul ticket BEN-12", .agent("aggiorna la nota di Mario sul ticket BEN-12")),
             ("Cosa ho fatto questa settimana?", .agent("Cosa ho fatto questa settimana?")),
+            ("/ingest 00-Inbox/a.pdf", .agent("/ingest 00-Inbox/a.pdf")),
             ("Stop.", .stop), ("ripeti", .repeatLast), ("Annulla", .cancel),
-            ("Sì.", .yes), ("no", .no),
+            ("Sì.", .yes), ("no", .no), ("Stop, ma prima dimmi l'ora", .agent("Stop, ma prima dimmi l'ora")),
             ("Ingesta la clipboard", .clipboard(ingest: true, question: "Ingesta la clipboard")),
             ("riassumi quello che ho copiato", .clipboard(ingest: false, question: "riassumi quello che ho copiato")),
-            ("Chi è Anna Rossi?", .agent("Chi è Anna Rossi?")),
         ]
         var failed = 0
         for (input, expected) in cases where Intent.route(input) != expected {

@@ -1,15 +1,56 @@
 import AVFoundation
-import TTSKit
+import Accelerate
 
-/// Lock-protected flag readable from TTSKit's background callback.
-private final class CancelFlag: @unchecked Sendable {
+/// Audio levels shared with the orb renderer: x = overall, y = low, z = mid, w = high band. Written from audio threads.
+final class Levels: @unchecked Sendable {
     private let lock = NSLock()
-    private var _on = false
-    var on: Bool { lock.withLock { _on } }
-    func set() { lock.withLock { _on = true } }
+    private var _value = SIMD4<Float>(repeating: 0)
+    var value: SIMD4<Float> { lock.withLock { _value } }
+    func set(_ v: SIMD4<Float>) { lock.withLock { _value = v } }
 }
 
-/// Buffers scheduled on the player but not yet played. Touched from TTSKit's thread and the audio thread.
+/// Real FFT (vDSP) folded into 3 bands. One instance per audio thread.
+final class Spectrum {
+    private let n = 1024
+    private let log2n = vDSP_Length(10)
+    private let setup: FFTSetup
+    private var window: [Float]
+    private var real: [Float], imag: [Float], mags: [Float]
+
+    init() {
+        setup = vDSP_create_fftsetup(log2n, FFTRadix(kFFTRadix2))!
+        window = [Float](repeating: 0, count: n)
+        vDSP_hann_window(&window, vDSP_Length(n), Int32(vDSP_HANN_NORM))
+        real = .init(repeating: 0, count: n / 2); imag = real; mags = real
+    }
+    deinit { vDSP_destroy_fftsetup(setup) }
+
+    func analyze(_ samples: UnsafePointer<Float>, count: Int) -> SIMD4<Float> {
+        guard count > 0 else { return .zero }
+        var frame = [Float](repeating: 0, count: n)
+        vDSP_vmul(samples, 1, window, 1, &frame, 1, vDSP_Length(min(count, n)))
+        real.withUnsafeMutableBufferPointer { r in
+            imag.withUnsafeMutableBufferPointer { i in
+                var split = DSPSplitComplex(realp: r.baseAddress!, imagp: i.baseAddress!)
+                frame.withUnsafeBytes { raw in
+                    vDSP_ctoz(raw.bindMemory(to: DSPComplex.self).baseAddress!, 2, &split, 1, vDSP_Length(n / 2))
+                }
+                vDSP_fft_zrip(setup, &split, 1, log2n, FFTDirection(FFT_FORWARD))
+                vDSP_zvmags(&split, 1, &mags, 1, vDSP_Length(n / 2))
+            }
+        }
+        // ponytail: fixed bin ranges assume ~16–48 kHz input; fine for voice
+        func band(_ a: Int, _ b: Int) -> Float {
+            var mean: Float = 0
+            vDSP_meanv(Array(mags[a..<b]), 1, &mean, vDSP_Length(b - a))
+            return min(1, sqrt(mean) / 40)
+        }
+        let low = band(2, 16), mid = band(16, 80), high = band(80, 256)
+        return SIMD4(min(1, (low + mid + high) / 1.5), low, mid, high)
+    }
+}
+
+/// Buffers scheduled on the player but not yet played. Touched from the main actor and the audio thread.
 private final class Counter: @unchecked Sendable {
     private let lock = NSLock()
     private var n = 0
@@ -19,15 +60,13 @@ private final class Counter: @unchecked Sendable {
 }
 
 /// Sentence-by-sentence TTS through our own AVAudioEngine, so the orb can run an FFT on the real voice.
-/// Neural voice: TTSKit (Qwen3-TTS 1.7B, local). Fallback while it loads, or by choice: AVSpeechSynthesizer.write().
+/// System voice via AVSpeechSynthesizer.write(); nothing is spoken while muted.
 @MainActor final class Speaker {
     var onIdle: (() -> Void)?
     var onStart: (() -> Void)?
     let levels = Levels()
 
     private let synth = AVSpeechSynthesizer()
-    private var tts: TTSKit?
-    private var cancel = CancelFlag()
     private let scheduled = Counter()
     private let engine = AVAudioEngine()
     private let player = AVAudioPlayerNode()
@@ -82,22 +121,8 @@ private final class Counter: @unchecked Sendable {
 
     func say(_ text: String) { enqueue(text) }
 
-    /// Loads the neural voice (first run: ~2 GB download + Neural Engine compile, a few minutes).
-    func loadNeuralVoice() async {
-        let base = FileManager.default.homeDirectoryForCurrentUser.appending(path: "Library/Application Support/Jarvis/models")
-        do {
-            let kit = try await TTSKit(TTSKitConfig(model: .qwen3TTS_1_7b, downloadBase: base, verbose: false))
-            try await kit.loadModels()
-            tts = kit
-            Log.write("TTSKit pronto")
-        } catch {
-            Log.write("TTSKit non disponibile, uso la voce di sistema: \(error)")
-        }
-    }
-
     func stop() {
         generation += 1
-        cancel.set(); cancel = CancelFlag()
         queue.removeAll()
         synth.stopSpeaking(at: .immediate)
         player.stop()
@@ -114,7 +139,7 @@ private final class Counter: @unchecked Sendable {
 
     private func enqueue(_ raw: String) {
         let text = Self.plain(raw)
-        guard !text.isEmpty else { return }
+        guard !text.isEmpty, !Prefs.muted else { return }
         queue.append(text)
         renderNext()
     }
@@ -123,7 +148,6 @@ private final class Counter: @unchecked Sendable {
         guard !rendering, !queue.isEmpty else { return }
         rendering = true
         let text = queue.removeFirst()
-        if let tts, let speaker = Self.neuralSpeaker() { return renderNeural(text, tts: tts, speaker: speaker) }
         let utterance = AVSpeechUtterance(string: text)
         utterance.voice = Self.voice()
         utterance.rate = Float(Prefs.speechRate) * (AVSpeechUtteranceMaximumSpeechRate - AVSpeechUtteranceMinimumSpeechRate) + AVSpeechUtteranceMinimumSpeechRate
@@ -132,46 +156,6 @@ private final class Counter: @unchecked Sendable {
             guard let pcm = buffer as? AVAudioPCMBuffer else { return }
             Task { @MainActor in self?.received(pcm, generation: gen) }
         }
-    }
-
-    /// Chunks go straight from TTSKit's callback thread to the player, in order: no main-actor hop,
-    /// so "done speaking" can't be observed while audio is still on its way.
-    private func renderNeural(_ text: String, tts: TTSKit, speaker: Qwen3Speaker) {
-        guard let format = AVAudioFormat(standardFormatWithSampleRate: 24_000, channels: 1) else { rendering = false; return }
-        prepare(format)
-        let gen = generation, flag = cancel, player = player, scheduled = scheduled
-        let played: @Sendable () -> Void = { Task { @MainActor [weak self] in self?.bufferPlayed(generation: gen) } }
-        var options = GenerationOptions()
-        options.instruction = "Parla in italiano con tono calmo, asciutto e professionale."
-        Task.detached {
-            // ponytail: 0.6 s pre-buffer then 0.3 s chunks; generation is ~1.15x realtime on M4 Pro, raise if gaps
-            var pending: [Float] = [], started = false
-            func flush() {
-                guard !pending.isEmpty, !flag.on,
-                      let buf = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(pending.count)) else { return }
-                buf.frameLength = buf.frameCapacity
-                pending.withUnsafeBufferPointer { buf.floatChannelData![0].update(from: $0.baseAddress!, count: $0.count) }
-                pending = []; started = true
-                scheduled.add(1)
-                player.scheduleBuffer(buf) { scheduled.add(-1); played() }
-            }
-            do {
-                _ = try await tts.generate(text: text, speaker: speaker, language: .italian, options: options) { step in
-                    pending += step.audio
-                    if pending.count >= (started ? 7_200 : 14_400) { flush() }
-                    return !flag.on
-                }
-            } catch { if !flag.on { Log.write("TTSKit errore: \(error)") } }
-            flush()
-            await MainActor.run { [weak self] in self?.neuralFinished(generation: gen) }
-        }
-    }
-
-    private func neuralFinished(generation gen: Int) {
-        guard gen == generation else { return }
-        rendering = false
-        renderNext()
-        if !isSpeaking { levels.set(.zero); onIdle?() }
     }
 
     private func bufferPlayed(generation gen: Int) {
@@ -215,12 +199,6 @@ private final class Counter: @unchecked Sendable {
               let out = AVAudioPCMBuffer(pcmFormat: f, frameCapacity: pcm.frameLength) else { return nil }
         try? conv.convert(to: out, from: pcm)
         return out
-    }
-
-    /// voiceID "" = neural Eric; "tts:<name>" = another neural voice; anything else = a system voice identifier.
-    static func neuralSpeaker() -> Qwen3Speaker? {
-        guard let id = Prefs.voiceID else { return .eric }
-        return id.hasPrefix("tts:") ? Qwen3Speaker(rawValue: String(id.dropFirst(4))) : nil
     }
 
     /// System voice: chosen one, else best Italian "Luca", else best Italian voice.

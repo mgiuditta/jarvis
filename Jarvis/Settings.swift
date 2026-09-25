@@ -2,11 +2,10 @@ import SwiftUI
 import AVFoundation
 import KeyboardShortcuts
 import ServiceManagement
-import TTSKit
 
 struct SettingsView: View {
     let app: AppState
-    @AppStorage("orbHex") private var orbHex = "#3FD8FF"
+    @AppStorage("orbColor") private var orbHex = "#9B5CFF"
     @AppStorage("orbOnlyWhenActive") private var orbOnlyWhenActive = false
     @AppStorage("voiceID") private var voiceID = ""
     @AppStorage("speechRate") private var speechRate = 0.5
@@ -28,17 +27,15 @@ struct SettingsView: View {
             }
             Section("Voce") {
                 Picker("Voce", selection: $voiceID) {
-                    Text("Eric · neurale (consigliata)").tag("")
-                    ForEach(Qwen3Speaker.allCases.filter { $0 != .eric }, id: \.self) { v in
-                        Text("\(v.rawValue.capitalized) · neurale").tag("tts:\(v.rawValue)")
-                    }
-                    Divider()
-                    ForEach(voices, id: \.identifier) { v in Text("\(v.name) · sistema \(quality(v))").tag(v.identifier) }
+                    Text("Automatica (Luca, se installata)").tag("")
+                    ForEach(voices, id: \.identifier) { v in Text("\(v.name) · \(quality(v))").tag(v.identifier) }
                 }
-                Slider(value: $speechRate, in: 0.3...0.7) { Text("Velocità (solo voci di sistema)") }
+                Slider(value: $speechRate, in: 0.3...0.7) { Text("Velocità") }
                 Button("Prova") { app.speaker.stop(); app.speaker.say("Ciao, sono Jarvis. Dimmi pure.") }
-                Text("Le voci neurali (Qwen3-TTS) girano in locale; al primo avvio il modello si scarica e compila per qualche minuto, intanto parla la voce di sistema.")
-                    .font(.caption).foregroundStyle(.secondary)
+                if !voices.contains(where: { $0.name.hasPrefix("Luca") && $0.quality == .premium }) {
+                    Text("Per una voce migliore scarica \"Luca (Premium)\" da Impostazioni di Sistema › Accessibilità › Contenuti letti ad alta voce.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
             }
             Section("Orb") {
                 ColorPicker("Colore", selection: Binding(get: { Color(hex: orbHex) }, set: { orbHex = $0.hex }), supportsOpacity: false)
@@ -78,12 +75,12 @@ struct SettingsView: View {
 
 extension Color {
     init(hex: String) {
-        let c = OrbRenderer.rgb(hex: hex)
-        self.init(red: Double(c.x), green: Double(c.y), blue: Double(c.z))
+        let v = UInt32(hex.trimmingCharacters(in: CharacterSet(charactersIn: "#")), radix: 16) ?? 0x9B5CFF
+        self.init(red: Double((v >> 16) & 0xFF) / 255, green: Double((v >> 8) & 0xFF) / 255, blue: Double(v & 0xFF) / 255)
     }
 
     var hex: String {
-        guard let c = NSColor(self).usingColorSpace(.sRGB) else { return "#3FD8FF" }
+        guard let c = NSColor(self).usingColorSpace(.sRGB) else { return "#9B5CFF" }
         return String(format: "#%02X%02X%02X", Int(c.redComponent * 255), Int(c.greenComponent * 255), Int(c.blueComponent * 255))
     }
 }
