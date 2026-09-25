@@ -16,7 +16,11 @@
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
-		A10000000000000000000002 /* Jarvis */ = {isa = PBXFileSystemSynchronizedRootGroup; path = Jarvis; sourceTree = "<group>"; };
+		A10000000000000000000002 /* Jarvis */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = Jarvis;
+			sourceTree = "<group>";
+		};
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -192,7 +196,10 @@
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.productivity";
 				INFOPLIST_KEY_LSUIElement = YES;
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Jarvis ascolta la tua voce solo mentre è attivo (⌥Space). L'audio non viene salvato.";
-				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/../Frameworks";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.mgiuditta.jarvis;
 				PRODUCT_NAME = Jarvis;
@@ -216,7 +223,10 @@
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.productivity";
 				INFOPLIST_KEY_LSUIElement = YES;
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Jarvis ascolta la tua voce solo mentre è attivo (⌥Space). L'audio non viene salvato.";
-				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/../Frameworks";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.mgiuditta.jarvis;
 				PRODUCT_NAME = Jarvis;
