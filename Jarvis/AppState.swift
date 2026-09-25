@@ -53,6 +53,7 @@ struct RecentCommand: Identifiable, Codable {
 
     /// Hotkey: start listening; again while listening = done talking; while speaking = barge in.
     func hotkey() {
+        Log.write("hotkey (stato \(state.rawValue))")
         switch state {
         case .listening: audio.stop()
         case .speaking: speaker.stop(); listen()
@@ -71,7 +72,7 @@ struct RecentCommand: Identifiable, Codable {
 
     private func heard(_ text: String) {
         state = restingState
-        guard !text.isEmpty else { return }
+        guard !text.isEmpty else { return Log.write("trascrizione vuota") }
         transcript = text
         Log.write("utente: \(text)")
         let intent = Intent.route(text)

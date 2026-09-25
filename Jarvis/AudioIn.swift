@@ -63,6 +63,7 @@ final class Spectrum {
     private var samples: [Float] = []
     private var speechStarted = false
     private var silence: TimeInterval = 0
+    private var peakRMS: Float = 0
     private var listening = false
     private var transcribing = false
     private var lastPartial = Date.distantPast
@@ -87,12 +88,18 @@ final class Spectrum {
 
     func start() {
         guard !listening, whisper != nil else { return }
+        Log.write("ascolto: avvio (microfono \(AVCaptureDevice.authorizationStatus(for: .audio).rawValue))")
         samples.removeAll(keepingCapacity: true)
-        speechStarted = false; silence = 0; startedAt = .now; lastPartial = .now
+        speechStarted = false; silence = 0; peakRMS = 0; startedAt = .now; lastPartial = .now
         let input = engine.inputNode
         let inFormat = input.outputFormat(forBus: 0)
         guard let outFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 16_000, channels: 1, interleaved: false),
-              let converter = AVAudioConverter(from: inFormat, to: outFormat) else { return }
+              inFormat.channelCount > 0, let converter = AVAudioConverter(from: inFormat, to: outFormat) else {
+            Log.write("ascolto: formato microfono non valido \(inFormat)")
+            onStatus?("Microfono non disponibile: controlla il permesso in Privacy › Microfono.")
+            onFinal?("")
+            return
+        }
         let spectrum = Spectrum(), levels = levels
 
         input.installTap(onBus: 0, bufferSize: 1024, format: inFormat) { [weak self] buffer, _ in
@@ -113,7 +120,9 @@ final class Spectrum {
             listening = true
         } catch {
             input.removeTap(onBus: 0)
+            Log.write("ascolto: engine.start fallito \(error)")
             onStatus?("Microfono non disponibile: \(error.localizedDescription)")
+            onFinal?("")
         }
     }
 
@@ -125,6 +134,7 @@ final class Spectrum {
         engine.stop()
         levels.set(.zero)
         let audio = samples; samples = []
+        Log.write("ascolto: fine, \(String(format: "%.1f", Double(audio.count) / 16_000)) s, voce \(speechStarted ? "sì" : "no"), picco RMS \(String(format: "%.4f", peakRMS)) (soglia \(speechRMS))")
         guard transcribe, speechStarted else { if transcribe { onFinal?("") }; return }
         Task {
             while transcribing { try? await Task.sleep(for: .milliseconds(30)) } // one decode at a time
@@ -137,6 +147,7 @@ final class Spectrum {
         samples += chunk
         var rms: Float = 0
         vDSP_rmsqv(chunk, 1, &rms, vDSP_Length(chunk.count))
+        peakRMS = max(peakRMS, rms)
         let seconds = Double(chunk.count) / 16_000
         if rms > speechRMS { speechStarted = true; silence = 0 } else if speechStarted { silence += seconds }
 
