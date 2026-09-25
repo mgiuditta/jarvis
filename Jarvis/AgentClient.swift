@@ -1,0 +1,97 @@
+import Foundation
+
+/// One JSON line from agent/agent.mjs.
+struct AgentEvent: Decodable {
+    let type: String
+    var id, delta, name, summary, path, op, question, text, message, session_id: String?
+}
+
+/// Runs `node agent.mjs` with cwd = vault and talks JSON lines. Restarts with backoff if it dies.
+@MainActor final class AgentClient {
+    var onEvent: ((AgentEvent) -> Void)?
+    private var process: Process?
+    private var stdin: FileHandle?
+    private var backoff: Double = 1
+    private var stopping = false
+
+    func start() {
+        stopping = false
+        guard let script = Bundle.main.url(forResource: "agent", withExtension: "mjs", subdirectory: "agent") else {
+            return fail("agent.mjs non trovato nel bundle")
+        }
+        let node = Prefs.nodePath
+        guard FileManager.default.isExecutableFile(atPath: node) else { return fail("Node non trovato in \(node). Controlla le impostazioni.") }
+
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: node)
+        p.arguments = [script.path]
+        p.currentDirectoryURL = URL(fileURLWithPath: Prefs.vaultPath)
+        var env = ProcessInfo.processInfo.environment
+        // GUI apps don't inherit the shell PATH: give skills the usual tools.
+        env["PATH"] = [(node as NSString).deletingLastPathComponent, Prefs.home + "/.local/bin",
+                       "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin"].joined(separator: ":")
+        env["JARVIS_VAULT"] = Prefs.vaultPath
+        env["JARVIS_CLAUDE"] = Prefs.claudePath
+        env["JARVIS_STATE"] = Prefs.home + "/Library/Application Support/Jarvis/session.json"
+        if let key = Keychain.apiKey { env["ANTHROPIC_API_KEY"] = key }
+        p.environment = env
+
+        let inPipe = Pipe(), outPipe = Pipe(), errPipe = Pipe()
+        p.standardInput = inPipe; p.standardOutput = outPipe; p.standardError = errPipe
+
+        var buffer = Data()
+        outPipe.fileHandleForReading.readabilityHandler = { [weak self] h in
+            buffer.append(h.availableData)
+            while let nl = buffer.firstIndex(of: 0x0A) {
+                let line = buffer[..<nl]; buffer.removeSubrange(...nl)
+                guard let event = try? JSONDecoder().decode(AgentEvent.self, from: line) else { continue }
+                Task { @MainActor in self?.received(event) }
+            }
+        }
+        errPipe.fileHandleForReading.readabilityHandler = { h in
+            if let s = String(data: h.availableData, encoding: .utf8), !s.isEmpty { Log.write("agent stderr: \(s)") }
+        }
+        p.terminationHandler = { [weak self] proc in
+            Task { @MainActor in self?.terminated(proc) }
+        }
+        do {
+            try p.run()
+            process = p; stdin = inPipe.fileHandleForWriting
+            Log.write("agent avviato pid \(p.processIdentifier)")
+        } catch { fail("Avvio agente fallito: \(error.localizedDescription)") }
+    }
+
+    func send(_ message: [String: Any]) {
+        guard let stdin, let data = try? JSONSerialization.data(withJSONObject: message) else { return }
+        stdin.write(data + Data([0x0A]))
+    }
+
+    func stop() {
+        stopping = true
+        process?.terminate()
+    }
+
+    private func received(_ event: AgentEvent) {
+        if event.type == "ready" || event.type == "done" { backoff = 1 }
+        onEvent?(event)
+    }
+
+    private func terminated(_ proc: Process) {
+        guard proc === process else { return } // an old process after a manual restart
+        process = nil; stdin = nil
+        guard !stopping else { return }
+        Log.write("agente terminato (\(proc.terminationStatus)), riavvio tra \(backoff)s")
+        onEvent?(AgentEvent(type: "error", message: "L'agente si è fermato, lo riavvio."))
+        let delay = backoff
+        backoff = min(backoff * 2, 30)
+        Task { @MainActor in
+            try? await Task.sleep(for: .seconds(delay))
+            if !self.stopping { self.start() }
+        }
+    }
+
+    private func fail(_ message: String) {
+        Log.write(message)
+        onEvent?(AgentEvent(type: "error", message: message))
+    }
+}
