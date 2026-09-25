@@ -39,7 +39,7 @@ struct RecentCommand: Identifiable, Codable {
 
     init() {
         speaker.onStart = { [weak self] in
-            guard let self, self.state != .confirm, self.state != .listening else { return }
+            guard let self, self.state != .confirm else { return }
             self.state = .speaking
         }
         speaker.onIdle = { [weak self] in self?.speechEnded() }
@@ -49,11 +49,11 @@ struct RecentCommand: Identifiable, Codable {
 
     // MARK: input
 
-    /// Hotkey: open the input field; again = send now (or close it if empty). Also barges in on speech.
+    /// Hotkey: open the conversation; again = send now (or close it if empty). Also barges in on speech.
     func hotkey() {
         Log.write("hotkey (stato \(state.rawValue))")
         guard inputActive else { return listen() }
-        draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? closeInput() : submit()
+        draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? close() : submit()
     }
 
     /// Shows the input field focused, remembering which app to give focus back to.
@@ -62,34 +62,39 @@ struct RecentCommand: Identifiable, Codable {
         if let front = NSWorkspace.shared.frontmostApplication, front != .current { previousApp = front }
         draft = ""
         inputActive = true
-        if confirmation == nil { state = .listening }
+        state = restingState
         expand()
         activate?()
         focusRequest += 1
     }
 
-    /// ⏎ or auto-send: an empty ⏎ during a confirmation means "sì".
+    /// ⏎ or auto-send. The field stays open, so the next dictation continues the conversation.
+    /// An empty ⏎ during a confirmation means "sì".
     func submit() {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         draft = ""
         guard !text.isEmpty else { if confirmation != nil { answerConfirmation(true) }; return }
-        closeInput()
         heard(text)
     }
 
-    /// Esc: "no" to a confirmation, otherwise close the field.
+    /// Esc: "no" to a confirmation, else clears the field, else closes the conversation.
     func escape() {
         if confirmation != nil { draft = ""; return answerConfirmation(false) }
-        closeInput()
-        scheduleCollapse()
+        if !draft.isEmpty { draft = ""; return }
+        close()
     }
 
-    private func closeInput() {
+    /// ✕ / Esc on an empty field: stop talking, hide the card, give focus back. Claude keeps working if busy.
+    func close() {
+        if confirmation != nil { answerConfirmation(false) }  // don't leave the agent waiting on a hidden question
+        speaker.stop()
         draft = ""
         inputActive = false
-        if state == .listening { state = restingState }
+        expanded = false
+        state = restingState
         previousApp?.activate()
         previousApp = nil
+        if Prefs.orbOnlyWhenActive, !busy { setOrb(false) }
     }
 
     private func heard(_ text: String) {
@@ -139,7 +144,6 @@ struct RecentCommand: Identifiable, Codable {
         confirmation = nil
         agent.send(["type": "confirm", "id": c.id, "allow": allow])
         tools.append(ToolItem(icon: allow ? "checkmark.circle" : "xmark.circle", text: allow ? "Confermato" : "Rifiutato"))
-        closeInput()
         state = restingState
     }
 
@@ -228,7 +232,7 @@ struct RecentCommand: Identifiable, Codable {
             if let text = e.text, !text.isEmpty { answer = text }
             Log.write("jarvis: \(Speaker.spokenPart(of: lastAnswer))")
             speaker.finishAnswer(fullText: lastAnswer)
-            if !speaker.isSpeaking, state != .listening { state = restingState; scheduleCollapse() }
+            if !speaker.isSpeaking { state = restingState; scheduleCollapse() }
         case "error":
             busy = false
             confirmation = nil
@@ -243,14 +247,14 @@ struct RecentCommand: Identifiable, Codable {
 
     // MARK: helpers
 
-    private var restingState: OrbState { confirmation != nil ? .confirm : busy ? .thinking : .idle }
+    private var restingState: OrbState { confirmation != nil ? .confirm : busy ? .thinking : inputActive ? .listening : .idle }
 
     private func say(_ text: String) {
         speaker.say(text)
     }
 
     private func speechEnded() {
-        if state == .speaking || state == .idle { state = restingState }
+        if state == .speaking || state == .idle || state == .listening { state = restingState }
         if !busy { scheduleCollapse() }
     }
 

@@ -73,7 +73,7 @@ struct OverlayView: View {
 
     private var hint: String? {
         switch app.state {
-        case .listening: "Detta con Wispr: invio automatico dopo un secondo · Esc annulla"
+        case .listening: "Detta con Wispr: invio automatico dopo un secondo"
         case .thinking: "Ci penso…"
         default: nil
         }
@@ -93,6 +93,7 @@ struct OverlayView: View {
             .onAppear { inputFocused = true }
             .onChange(of: app.focusRequest) { inputFocused = true }
             .onSubmit { app.submit() }
+            .onChange(of: app.draft) { _, text in if !text.isEmpty { app.speaker.stop() } }  // dictating = barge in
             .onExitCommand { app.escape() }
             .task(id: app.draft) {
                 guard !app.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
@@ -103,6 +104,16 @@ struct OverlayView: View {
 
     private var card: some View {
         VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("JARVIS").font(.caption.monospaced().weight(.semibold)).tracking(3).foregroundStyle(Color(hex: orbHex))
+                Spacer()
+                Button { app.close() } label: {
+                    Image(systemName: "xmark").font(.system(size: 11, weight: .bold)).frame(width: 22, height: 22)
+                        .background(.white.opacity(0.08), in: Circle())
+                }
+                .buttonStyle(.plain)
+                .help("Chiudi (Esc)")
+            }
             if let hint {
                 Label(hint, systemImage: app.state == .listening ? "waveform" : "ellipsis")
                     .font(.callout.weight(.medium)).foregroundStyle(Color(hex: orbHex))
