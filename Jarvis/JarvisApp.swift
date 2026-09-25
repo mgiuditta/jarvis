@@ -43,10 +43,53 @@ struct JarvisApp: App {
         app.setOrb(Prefs.orbVisible && !Prefs.orbOnlyWhenActive)
         KeyboardShortcuts.onKeyUp(for: .talk) { [app] in app.hotkey() }
         KeyboardShortcuts.onKeyUp(for: .toggleOrb) { [app] in app.setOrb(!app.orbShown, remember: true) }
+        DispatchQueue.main.async { [app] in StatusItemDrop.install(app: app) }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
         app.agent.stop()
+    }
+}
+
+/// MenuBarExtra has no drop API: overlay the status item button with a view that only accepts file drags.
+final class StatusItemDrop: NSView {
+    private let app: AppState
+
+    static func install(app: AppState) {
+        // ponytail: finds the button by window class name, breaks silently if AppKit renames it
+        guard let button = NSApp.windows.first(where: { $0.className.contains("NSStatusBarWindow") })?.contentView
+                .flatMap({ $0 as? NSButton ?? $0.subviews.compactMap { $0 as? NSButton }.first }) else {
+            return Log.write("drop menu bar: bottone non trovato")
+        }
+        let drop = StatusItemDrop(app: app)
+        drop.frame = button.bounds
+        drop.autoresizingMask = [.width, .height]
+        button.addSubview(drop)
+    }
+
+    init(app: AppState) {
+        self.app = app
+        super.init(frame: .zero)
+        registerForDraggedTypes([.fileURL])
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }  // clicks go to the button
+
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        (superview as? NSButton)?.highlight(true)
+        return .copy
+    }
+
+    override func draggingExited(_ sender: NSDraggingInfo?) { (superview as? NSButton)?.highlight(false) }
+
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        (superview as? NSButton)?.highlight(false)
+        let urls = sender.draggingPasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL] ?? []
+        guard !urls.isEmpty else { return false }
+        app.ingest(files: urls)
+        return true
     }
 }
 
