@@ -5,7 +5,7 @@ cd "${0:A:h}/.."
 NODE_BIN="${NODE_BIN:-$(ls -d ~/.nvm/versions/node/*/bin | sort -V | tail -1)}"
 PATH="$NODE_BIN:$PATH" npm --prefix agent ci --omit=optional --ignore-scripts --silent  # ignore-scripts: koffi (Copilot in-process FFI, unused) would need CMake
 PATH="$NODE_BIN:$PATH" node --test agent/*.test.mjs
-mkdir -p build && swiftc -parse-as-library Jarvis/Intent.swift Scripts/IntentCheck.swift -o build/intentcheck && build/intentcheck
+swift test --package-path Tests --scratch-path build/tests --disable-xctest -q
 xcodebuild -project Jarvis.xcodeproj -scheme Jarvis -configuration Release -derivedDataPath build \
   -allowProvisioningUpdates build | grep -E "error:|BUILD (SUCCEEDED|FAILED)"
 osascript -e 'quit app "Jarvis"' 2>/dev/null || true

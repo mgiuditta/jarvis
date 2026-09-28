@@ -36,6 +36,7 @@ struct RecentCommand: Identifiable, Codable {
     var orbShown = false
     var anchorTop = false   // which screen corner the orb sits in: the card opens toward the center
     var anchorLeft = false
+    var screenHeight: CGFloat = 800  // visible height of the orb's screen, caps the conversation
     private(set) var busy = false
     var commands: [SlashCommand] = []   // for the "/" picker, from the agent
     var mcpServers: [McpServer] = []    // MCP dashboard, from the agent's mcp_status
@@ -46,9 +47,13 @@ struct RecentCommand: Identifiable, Codable {
     @ObservationIgnored let agent = AgentClient()
     @ObservationIgnored var showOrb: ((Bool) -> Void)?
     @ObservationIgnored var activate: (() -> Void)?   // bring Jarvis forward so Wispr types into it
+    @ObservationIgnored var openDashboard: (() -> Void)?  // set by MenuBarIcon, which lives in a scene
+    @ObservationIgnored var openSettings: (() -> Void)?
     @ObservationIgnored private var lastAnswer = ""
     @ObservationIgnored private var previousApp: NSRunningApplication?
     @ObservationIgnored private var collapseTask: Task<Void, Never>?
+    @ObservationIgnored private var errorTask: Task<Void, Never>?
+    @ObservationIgnored private var restartTask: Task<Void, Never>?
 
     init() {
         speaker.onStart = { [weak self] in
@@ -186,20 +191,30 @@ struct RecentCommand: Identifiable, Codable {
             draft = folders.map { "\"\($0.path)\"" }.joined(separator: " ") + " "
         }
         let files = files.filter { !isDir($0) }
+        guard !files.isEmpty else { return }
         let inbox = URL(fileURLWithPath: Prefs.vaultPath).appending(path: "00-Inbox")
-        var copied: [String] = []
+        Task {
+            let (copied, failed) = await Self.copy(files, to: inbox)  // a big drop must not freeze the orb
+            if let f = failed.last { status = "Non riesco a copiare \(f)." }
+            guard !copied.isEmpty else { return }
+            ask("/ingest " + copied.joined(separator: " "), label: "Ingest di \(files.map(\.lastPathComponent).joined(separator: ", "))")
+        }
+    }
+
+    /// Off the main actor. Returns the quoted vault paths copied and the names that failed.
+    @concurrent private static func copy(_ files: [URL], to inbox: URL) async -> ([String], [String]) {
+        var copied: [String] = [], failed: [String] = []
         for file in files {
-            let dest = Self.unique(inbox.appending(path: file.lastPathComponent))
+            let dest = unique(inbox.appending(path: file.lastPathComponent))
             do {
                 try FileManager.default.copyItem(at: file, to: dest)
                 copied.append("\"00-Inbox/\(dest.lastPathComponent)\"")
             } catch {
                 Log.write("copia fallita \(file.path): \(error)")
-                status = "Non riesco a copiare \(file.lastPathComponent)."
+                failed.append(file.lastPathComponent)
             }
         }
-        guard !copied.isEmpty else { return }
-        ask("/ingest " + copied.joined(separator: " "), label: "Ingest di \(files.map(\.lastPathComponent).joined(separator: ", "))")
+        return (copied, failed)
     }
 
     /// "+" in the input field: same as dropping the files on the orb.
@@ -207,7 +222,7 @@ struct RecentCommand: Identifiable, Codable {
         let open = NSOpenPanel()
         open.allowsMultipleSelection = true
         open.canChooseDirectories = true
-        NSApp.activate(ignoringOtherApps: true)
+        NSApp.activate()
         if open.runModal() == .OK, !open.urls.isEmpty { ingest(files: open.urls) }
         activate?()
     }
@@ -228,10 +243,14 @@ struct RecentCommand: Identifiable, Codable {
             if let text, !text.isEmpty {
                 file = Self.unique(inbox.appending(path: "clipboard-\(stamp).md"))
                 try text.write(to: file, atomically: true, encoding: .utf8)
-            } else if let image = NSImage(pasteboard: pb), let tiff = image.tiffRepresentation,
-                      let png = NSBitmapImageRep(data: tiff)?.representation(using: .png, properties: [:]) {
+            } else if let tiff = NSImage(pasteboard: pb)?.tiffRepresentation {
                 file = Self.unique(inbox.appending(path: "clipboard-\(stamp).png"))
-                try png.write(to: file)
+                Task {
+                    do { try await Self.writePNG(tiff, to: file) }  // encoding a big screenshot takes a while
+                    catch { return status = "Non riesco a salvare la clipboard: \(error.localizedDescription)" }
+                    ask("/ingest \"00-Inbox/\(file.lastPathComponent)\"", label: question)
+                }
+                return
             } else {
                 return say("La clipboard è vuota.")
             }
@@ -241,7 +260,14 @@ struct RecentCommand: Identifiable, Codable {
         }
     }
 
-    private static func unique(_ url: URL) -> URL {
+    @concurrent private static func writePNG(_ tiff: Data, to url: URL) async throws {
+        guard let png = NSBitmapImageRep(data: tiff)?.representation(using: .png, properties: [:]) else {
+            throw CocoaError(.fileWriteUnknown)
+        }
+        try png.write(to: url)
+    }
+
+    nonisolated private static func unique(_ url: URL) -> URL {
         var candidate = url, n = 2
         let base = url.deletingPathExtension().lastPathComponent, ext = url.pathExtension
         while FileManager.default.fileExists(atPath: candidate.path) {
@@ -294,7 +320,11 @@ struct RecentCommand: Identifiable, Codable {
             Log.write("errore: \(status)")
             state = .error
             expand()
-            Task { try? await Task.sleep(for: .seconds(4)); if state == .error { state = restingState } }
+            errorTask?.cancel()
+            errorTask = Task {
+                do { try await Task.sleep(for: .seconds(4)) } catch { return }
+                if state == .error { state = restingState }
+            }
         default: break
         }
     }
@@ -365,6 +395,14 @@ struct RecentCommand: Identifiable, Codable {
 
     func restartAgent() {
         agent.stop()
-        Task { try? await Task.sleep(for: .milliseconds(500)); agent.start() }
+        // The old turn gets no done/error (stop() is deliberate): reset it here, like newSession().
+        speaker.stop()
+        busy = false; confirmation = nil
+        state = restingState
+        restartTask?.cancel()
+        restartTask = Task {
+            do { try await Task.sleep(for: .milliseconds(500)) } catch { return }
+            agent.start()
+        }
     }
 }

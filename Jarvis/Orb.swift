@@ -11,6 +11,7 @@ final class OrbWebView: WKWebView, WKNavigationDelegate {
     var hovering = false
     private let levels: Levels
     private var timer: Timer?
+    private var lastPush = ""
 
     init(levels: Levels) {
         self.levels = levels
@@ -33,16 +34,21 @@ final class OrbWebView: WKWebView, WKNavigationDelegate {
         super.viewDidMoveToWindow()
         timer?.invalidate(); timer = nil
         guard window != nil else { return }
-        timer = Timer.scheduledTimer(withTimeInterval: 1.0 / 30, repeats: true) { [weak self] _ in
+        let t = Timer(timeInterval: 1.0 / 30, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.push() }
         }
+        RunLoop.main.add(t, forMode: .common)  // keeps running while a menu is open or a panel is modal
+        timer = t
     }
 
     // ponytail: skips pushes while hidden; WebKit throttles the page's own render loop for hidden windows
     private func push() {
         guard window?.isVisible == true else { return }
         let v = state == .speaking ? levels.value : .zero
-        evaluateJavaScript("window.orb && orb.set({state:'\(state.rawValue)',level:\(v.x),low:\(v.y),high:\(v.w),hover:\(hovering),color:'\(colorHex)'})")
+        let js = "window.orb && orb.set({state:'\(state.rawValue)',level:\(v.x),low:\(v.y),high:\(v.w),hover:\(hovering),color:'\(colorHex)'})"
+        guard js != lastPush else { return }  // idle orb: nothing changes, nothing to send
+        lastPush = js
+        evaluateJavaScript(js)
     }
 
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
@@ -51,6 +57,7 @@ final class OrbWebView: WKWebView, WKNavigationDelegate {
 
     func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
         Log.write("orb: processo web terminato, ricarico")
+        lastPush = ""
         webView.reload()
     }
 }

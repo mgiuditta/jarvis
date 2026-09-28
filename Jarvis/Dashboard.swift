@@ -1,31 +1,16 @@
 import SwiftUI
 
-/// Jarvis's own MCP servers: ~/Library/Application Support/Jarvis/mcp.json, same shape as a .mcp.json.
-/// Both agents read it (JARVIS_MCP); servers from Claude/Copilot's own config are only shown.
-enum McpConfig {
-    static let url = URL(fileURLWithPath: Prefs.support + "/mcp.json")
-
-    /// Raw JSON per server, so fields the dashboard doesn't edit (env, headers…) survive a save.
-    static func load() -> [String: [String: Any]] {
-        guard let data = try? Data(contentsOf: url),
-              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return [:] }
-        return json["mcpServers"] as? [String: [String: Any]] ?? [:]
-    }
-
-    static func save(_ servers: [String: [String: Any]]) throws {
-        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-        let data = try JSONSerialization.data(withJSONObject: ["mcpServers": servers], options: [.prettyPrinted, .sortedKeys])
-        try data.write(to: url, options: .atomic)
-    }
-}
-
 /// Menu bar › Cruscotto MCP: what the running agent sees, plus Jarvis's own servers to add/remove.
 struct McpDashboard: View {
     let app: AppState
-    @State private var selection: String?
-    @State private var config = McpConfig.load()
+    @State private var selection: Pane?
+    @State private var config: [String: [String: Any]] = [:]  // loaded in onAppear, not on every rebuild
     @State private var adding = false
     @State private var saveError: String?
+    @State private var agentSilent = false  // no mcp_status after a few seconds: agent down or stuck
+
+    /// Enum, not a sentinel string: a server can't be named like the log entry.
+    private enum Pane: Hashable { case server(String), log }
 
     /// Agent's view first; Jarvis servers it didn't load (bad command, just added) still show up.
     private var rows: [McpServer] {
@@ -37,34 +22,9 @@ struct McpDashboard: View {
 
     var body: some View {
         NavigationSplitView {
-            List(selection: $selection) {
-                Section("Server") {
-                    ForEach(rows) { s in
-                        ServerRow(server: s, owned: config[s.name] != nil).tag(s.name)
-                    }
-                }
-                Section { Label("Log di Jarvis", systemImage: "text.alignleft").tag(Self.logTag) }
-            }
-            .overlay {
-                if app.mcpUpdated == nil { ProgressView("Chiedo lo stato all'agente…") }
-                else if rows.isEmpty {
-                    ContentUnavailableView {
-                        Label("Nessun server MCP", systemImage: "puzzlepiece.extension")
-                    } description: {
-                        Text("Aggiungine uno con +: funziona sia con Claude sia con Copilot.")
-                    }
-                }
-            }
-            .navigationSplitViewColumnWidth(min: 220, ideal: 260)
+            sidebar.navigationSplitViewColumnWidth(min: 220, ideal: 260)
         } detail: {
-            if selection == Self.logTag {
-                LogTail()
-            } else if let s = rows.first(where: { $0.name == selection }) {
-                ServerDetail(server: s, config: config[s.name], app: app, remove: { remove(s.name) })
-            } else {
-                ContentUnavailableView("Scegli un server", systemImage: "sidebar.left",
-                                       description: Text("Stato, tool e configurazione compaiono qui."))
-            }
+            detail
         }
         .navigationTitle("Cruscotto MCP")
         .navigationSubtitle("\(Prefs.isCopilot ? "GitHub Copilot" : "Claude Code") · \(summary)")
@@ -76,25 +36,74 @@ struct McpDashboard: View {
                     .help("Aggiungi un server MCP a Jarvis")
             }
         }
-        .sheet(isPresented: $adding) { AddServerSheet { name, entry in add(name, entry) } }
-        .alert("Non riesco a salvare mcp.json", isPresented: .constant(saveError != nil)) {
-            Button("OK") { saveError = nil }
+        .sheet(isPresented: $adding) { AddServerSheet(existing: Set(config.keys)) { name, entry in add(name, entry) } }
+        .alert("Non riesco a salvare mcp.json",
+               isPresented: Binding(get: { saveError != nil }, set: { if !$0 { saveError = nil } })) {
+            Button("OK") {}
         } message: { Text(saveError ?? "") }
-        .onAppear { config = McpConfig.load(); app.refreshMcp() }
+        .onAppear { config = McpConfig.load(); app.refreshMcp(); waitForAgent() }
     }
 
-    private static let logTag = "__log__"
+    private var sidebar: some View {
+        List(selection: $selection) {
+            Section("Server") {
+                ForEach(rows) { s in
+                    ServerRow(server: s, owned: config[s.name] != nil).tag(Pane.server(s.name))
+                }
+            }
+            Section { Label("Log di Jarvis", systemImage: "text.alignleft").tag(Pane.log) }
+        }
+        .overlay {
+            if app.mcpUpdated == nil && agentSilent {
+                ContentUnavailableView {
+                    Label("L'agente non risponde", systemImage: "bolt.horizontal.circle")
+                } description: {
+                    Text("Controlla motore e cartella in Impostazioni, o il log.")
+                } actions: {
+                    Button("Riavvia l'agente") { agentSilent = false; app.restartAgent(); waitForAgent() }
+                }
+            } else if app.mcpUpdated == nil {
+                ProgressView("Chiedo lo stato all'agente…")
+            } else if rows.isEmpty {
+                ContentUnavailableView {
+                    Label("Nessun server MCP", systemImage: "puzzlepiece.extension")
+                } description: {
+                    Text("Aggiungine uno con +: funziona sia con Claude sia con Copilot.")
+                }
+            }
+        }
+    }
+
+    @ViewBuilder private var detail: some View {
+        if selection == .log {
+            LogTail()
+        } else if case .server(let name) = selection, let s = rows.first(where: { $0.name == name }) {
+            ServerDetail(server: s, config: config[s.name], app: app, remove: { remove(s.name) })
+        } else {
+            ContentUnavailableView("Scegli un server", systemImage: "sidebar.left",
+                                   description: Text("Stato, tool e configurazione compaiono qui."))
+        }
+    }
+
+    @State private var waitTask: Task<Void, Never>?
+    private func waitForAgent() {
+        waitTask?.cancel()
+        let asked = app.mcpUpdated
+        waitTask = Task {
+            do { try await Task.sleep(for: .seconds(6)) } catch { return }
+            if app.mcpUpdated == asked { agentSilent = true }
+        }
+    }
 
     private var summary: String {
-        let up = rows.filter { $0.status == "connected" }.count
-        return "\(up) di \(rows.count) connessi"
+        "\(rows.count(where: { $0.status == "connected" })) di \(rows.count) connessi"
     }
 
     private func add(_ name: String, _ entry: [String: Any]) {
         var next = config
         next[name] = entry
         persist(next)
-        selection = name
+        selection = .server(name)
     }
 
     private func remove(_ name: String) {
@@ -244,6 +253,7 @@ private struct ServerDetail: View {
 }
 
 private struct AddServerSheet: View {
+    let existing: Set<String>
     let onAdd: (String, [String: Any]) -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var name = ""
@@ -253,7 +263,8 @@ private struct AddServerSheet: View {
     @State private var url = ""
 
     private var nameError: String? {
-        name.isEmpty || name.range(of: "^[A-Za-z0-9_-]+$", options: .regularExpression) != nil
+        if existing.contains(name) { return "Esiste già in mcp.json: rimuovilo prima, o modifica il file." }  // add would drop its env/headers
+        return name.isEmpty || name.range(of: "^[A-Za-z0-9_-]+$", options: .regularExpression) != nil
             ? nil : "Solo lettere, numeri, - e _."
     }
     private var valid: Bool {
@@ -320,18 +331,29 @@ private struct LogTail: View {
         }
         .toolbar {
             ToolbarItem {
-                Button { load() } label: { Label("Ricarica log", systemImage: "arrow.down.doc") }
-            }
-            ToolbarItem {
                 Button { NSWorkspace.shared.open(Log.dir) } label: { Label("Apri cartella log", systemImage: "folder") }
             }
         }
         .overlay { if lines.isEmpty { ContentUnavailableView("Log vuoto", systemImage: "text.alignleft") } }
-        .task { load() }
+        .task {
+            // Follows the log while shown; the task ends with the view.
+            while !Task.isCancelled {
+                let tail = await Self.tail()
+                if tail != lines { lines = tail }  // unchanged: no scroll jump
+                do { try await Task.sleep(for: .seconds(2)) } catch { return }
+            }
+        }
     }
 
-    private func load() {
-        let text = (try? String(contentsOf: Log.url, encoding: .utf8)) ?? ""
-        lines = Array(text.split(separator: "\n").suffix(200).map(String.init))
+    /// Last ~64 KB only (the log grows to 5 MB), read off the main actor.
+    @concurrent private static func tail() async -> [String] {
+        guard let h = try? FileHandle(forReadingFrom: Log.url) else { return [] }
+        defer { try? h.close() }
+        let size = (try? h.seekToEnd()) ?? 0
+        try? h.seek(toOffset: size > 65_536 ? size - 65_536 : 0)
+        let text = String(decoding: (try? h.readToEnd()) ?? Data(), as: UTF8.self)
+        var lines = text.split(separator: "\n").map(String.init)
+        if size > 65_536, !lines.isEmpty { lines.removeFirst() }  // cut mid-line
+        return Array(lines.suffix(200))
     }
 }

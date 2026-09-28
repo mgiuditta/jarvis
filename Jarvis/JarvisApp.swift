@@ -1,9 +1,14 @@
 import SwiftUI
-import KeyboardShortcuts
+@preconcurrency import KeyboardShortcuts  // Name isn't Sendable yet
 
 extension KeyboardShortcuts.Name {
     static let talk = Self("talk", default: .init(.space, modifiers: [.option]))
     static let toggleOrb = Self("toggleOrb", default: .init(.space, modifiers: [.option, .shift]))
+}
+
+/// Current binding as shown in menus ("⌥Space"), since both shortcuts can be changed in Settings.
+func shortcutLabel(_ name: KeyboardShortcuts.Name) -> String {
+    KeyboardShortcuts.getShortcut(for: name).map { "  \($0)" } ?? ""
 }
 
 @main
@@ -14,11 +19,29 @@ struct JarvisApp: App {
         MenuBarExtra {
             MenuContent(app: delegate.app)
         } label: {
-            Image(systemName: icon(delegate.app.state))
+            MenuBarIcon(app: delegate.app)  // own view: only it re-renders on state changes, not the scenes
         }
         Settings { SettingsView(app: delegate.app) }
         Window("Cruscotto MCP", id: "mcp") { McpDashboard(app: delegate.app) }
             .defaultSize(width: 760, height: 560)
+            .defaultLaunchBehavior(.suppressed)  // a menu bar agent never opens windows at launch/login
+            .restorationBehavior(.disabled)
+    }
+}
+
+struct MenuBarIcon: View {
+    let app: AppState
+    @Environment(\.openWindow) private var openWindow
+    @Environment(\.openSettings) private var openSettings
+
+    var body: some View {
+        Label("Jarvis", systemImage: icon(app.state))
+            .task {
+                // The orb's right-click menu lives in a plain NSHostingView, outside any scene:
+                // openWindow/SettingsLink do nothing there, so it goes through these.
+                app.openDashboard = { NSApp.activate(); openWindow(id: "mcp") }
+                app.openSettings = { NSApp.activate(); openSettings() }
+            }
     }
 
     private func icon(_ s: OrbState) -> String {
@@ -52,7 +75,7 @@ struct JarvisApp: App {
         app.setOrb(Prefs.orbVisible && !Prefs.orbOnlyWhenActive)
         KeyboardShortcuts.onKeyUp(for: .talk) { [app] in app.hotkey() }
         KeyboardShortcuts.onKeyUp(for: .toggleOrb) { [app] in app.setOrb(!app.orbShown, remember: true) }
-        DispatchQueue.main.async { [app] in StatusItemDrop.install(app: app) }
+        Task { [app] in StatusItemDrop.install(app: app) }  // next main-actor turn: the status item exists by then
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -104,11 +127,11 @@ final class StatusItemDrop: NSView {
 
 struct MenuContent: View {
     let app: AppState
-    @Environment(\.openWindow) private var openWindow
+    @AppStorage("vaultPath") private var vaultPath = ""  // observed: vault items follow a folder change
 
     var body: some View {
         Text(statusLine)
-        Button("Parla  ⌥Space") { app.hotkey() }
+        Button("Parla" + shortcutLabel(.talk)) { app.hotkey() }
         Divider()
         if !app.recent.isEmpty {
             Section("Recenti") {
@@ -116,7 +139,7 @@ struct MenuContent: View {
             }
             Divider()
         }
-        if Prefs.isVault {
+        if FileManager.default.fileExists(atPath: (vaultPath.isEmpty ? Prefs.vaultPath : vaultPath) + "/00-Inbox") {  // = Prefs.isVault, observed
             Button("Prepara la giornata") { app.ask("/prep-day") }
             Button("Chiudi la giornata") { app.ask("/close-day") }
             Button("Settimana") { app.ask("/weekly") }
@@ -128,14 +151,14 @@ struct MenuContent: View {
                 openObsidian(Prefs.vaultPath + "/00-Inbox/daily/\(Date.now.formatted(Date.ISO8601FormatStyle(timeZone: .current).year().month().day())).md")
             }
         }
-        Button("Cruscotto MCP…") { openWindow(id: "mcp"); NSApp.activate(ignoringOtherApps: true) }
-        Button(app.orbShown ? "Nascondi orb  ⌥⇧Space" : "Mostra orb  ⌥⇧Space") { app.setOrb(!app.orbShown, remember: true) }
+        Button("Cruscotto MCP…") { app.openDashboard?() }
+        Button((app.orbShown ? "Nascondi orb" : "Mostra orb") + shortcutLabel(.toggleOrb)) { app.setOrb(!app.orbShown, remember: true) }
         Button("Apri la sessione in Terminale") { Terminal.resumeSession() }
             .help("Stessa conversazione di Jarvis: non usarli tutti e due nello stesso momento")
         Button("Nuova sessione") { app.newSession() }
         Button("Apri log") { NSWorkspace.shared.open(Log.dir) }
         Divider()
-        SettingsLink { Text("Impostazioni…") }.keyboardShortcut(",")
+        Button("Impostazioni…") { app.openSettings?() }.keyboardShortcut(",")  // activates: an accessory app opens Settings behind
         Button("Esci") { NSApp.terminate(nil) }.keyboardShortcut("q")
     }
 

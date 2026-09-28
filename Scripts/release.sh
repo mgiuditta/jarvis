@@ -17,7 +17,7 @@ xcrun notarytool history --keychain-profile "$PROFILE" >/dev/null 2>&1 \
 NODE_BIN="${NODE_BIN:-$(ls -d ~/.nvm/versions/node/*/bin | sort -V | tail -1)}"
 PATH="$NODE_BIN:$PATH" npm --prefix agent ci --omit=optional --ignore-scripts --silent
 PATH="$NODE_BIN:$PATH" node --test agent/*.test.mjs
-mkdir -p build && swiftc -parse-as-library Jarvis/Intent.swift Scripts/IntentCheck.swift -o build/intentcheck && build/intentcheck
+swift test --package-path Tests --scratch-path build/tests --disable-xctest -q
 
 OUT=build/release
 rm -rf "$OUT" && mkdir -p "$OUT"

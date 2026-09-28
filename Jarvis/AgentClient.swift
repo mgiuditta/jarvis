@@ -1,7 +1,7 @@
 import Foundation
 
 /// One JSON line from agent/agent.mjs.
-struct AgentEvent: Decodable {
+struct AgentEvent: Decodable, Sendable {
     let type: String
     var id, delta, name, summary, path, op, question, text, message, session_id: String?
     var commands: [SlashCommand]?
@@ -9,7 +9,7 @@ struct AgentEvent: Decodable {
 }
 
 /// An MCP server as the running agent sees it (mcp_status).
-struct McpServer: Decodable, Identifiable, Hashable {
+struct McpServer: Decodable, Identifiable, Hashable, Sendable {
     var id: String { name }
     let name: String
     let status: String   // connected | failed | needs-auth | pending | disabled | stopped
@@ -19,7 +19,7 @@ struct McpServer: Decodable, Identifiable, Hashable {
 }
 
 /// A skill or command Claude Code offers in this session (typed as /name).
-struct SlashCommand: Decodable, Hashable {
+struct SlashCommand: Decodable, Hashable, Sendable {
     let name: String
     let description: String
     let argumentHint: String?
@@ -32,9 +32,15 @@ struct SlashCommand: Decodable, Hashable {
     private var stdin: FileHandle?
     private var backoff: Double = 1
     private var stopping = false
+    private var restartTask: Task<Void, Never>?
+    private var generation = 0  // events of a replaced process are dropped, even the late ones
 
     func start() {
+        restartTask?.cancel(); restartTask = nil
+        if let old = process { process = nil; stdin = nil; old.terminate() }  // never two agents at once
         stopping = false
+        generation += 1
+        let gen = generation
         signal(SIGPIPE, SIG_IGN)  // writing to a just-died agent must fail, not kill the app
         let name = Prefs.isCopilot ? "copilot" : "agent"
         guard let script = Bundle.main.url(forResource: name, withExtension: "mjs", subdirectory: "agent") else {
@@ -73,8 +79,14 @@ struct SlashCommand: Decodable, Hashable {
             buffer.append(data)
             while let nl = buffer.firstIndex(of: 0x0A) {
                 let line = buffer[..<nl]; buffer.removeSubrange(...nl)
-                guard let event = try? JSONDecoder().decode(AgentEvent.self, from: line) else { continue }
-                Task { @MainActor in self?.received(event) }
+                guard let event = try? JSONDecoder().decode(AgentEvent.self, from: line) else {
+                    Log.write("agent: riga non decodificabile \(String(decoding: line.prefix(200), as: UTF8.self))"); continue
+                }
+                // main queue, not a Task per line: FIFO is guaranteed, so partial_text deltas stay in order
+                DispatchQueue.main.async { MainActor.assumeIsolated {
+                    guard let self, self.generation == gen else { return }
+                    self.received(event)
+                } }
             }
         }
         errPipe.fileHandleForReading.readabilityHandler = { h in
@@ -101,6 +113,7 @@ struct SlashCommand: Decodable, Hashable {
 
     func stop() {
         stopping = true
+        restartTask?.cancel(); restartTask = nil
         process?.terminate()
     }
 
@@ -117,9 +130,10 @@ struct SlashCommand: Decodable, Hashable {
         onEvent?(AgentEvent(type: "error", message: "L'agente si è fermato, lo riavvio."))
         let delay = backoff
         backoff = min(backoff * 2, 30)
-        Task { @MainActor in
+        restartTask = Task {
             try? await Task.sleep(for: .seconds(delay))
-            if !self.stopping { self.start() }
+            guard !Task.isCancelled, !stopping else { return }
+            start()
         }
     }
 

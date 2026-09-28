@@ -1,7 +1,7 @@
 import Foundation
 
 /// What a dictated message means. Only Jarvis's own controls are caught here;
-/// everything else goes to Claude, which picks the vault skill itself. Pure, so Scripts/IntentCheck.swift can test it.
+/// everything else goes to Claude, which picks the vault skill itself. Pure, so Tests/ can test it.
 enum Intent: Equatable {
     case agent(String)          // text sent to the agent as is
     case stop, repeatLast, cancel, clear

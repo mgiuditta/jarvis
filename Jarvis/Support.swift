@@ -20,8 +20,9 @@ enum Log {
             guard let handle = try? FileHandle(forWritingTo: url) else {
                 try? line.write(to: url, atomically: true, encoding: .utf8); return
             }
-            handle.seekToEndOfFile()
-            handle.write(Data(line.utf8))
+            // throwing API: the old write(_:) raises an ObjC exception (a crash) on a full disk
+            _ = try? handle.seekToEnd()
+            try? handle.write(contentsOf: Data(line.utf8))
             try? handle.close()
         }
     }
@@ -29,7 +30,7 @@ enum Log {
 
 /// User settings (UserDefaults keys shared with @AppStorage in SettingsView).
 enum Prefs {
-    private static let d = UserDefaults.standard
+    private static var d: UserDefaults { .standard }
     static let home = NSHomeDirectory()
 
     static var vaultPath: String { d.string(forKey: "vaultPath").nonEmpty ?? home + "/Dev/sbu-brain" }
@@ -73,26 +74,47 @@ extension Optional where Wrapped == String {
 
 /// Optional Anthropic API key. Without it the agent uses the Claude Code login (subscription).
 enum Keychain {
-    private static let base: [String: Any] = [
+    nonisolated(unsafe) private static let base: [String: Any] = [  // immutable, only read
         kSecClass as String: kSecClassGenericPassword,
         kSecAttrService as String: "com.mgiuditta.jarvis",
         kSecAttrAccount as String: "anthropic-api-key",
     ]
 
     static var apiKey: String? {
-        get {
-            var query = base
-            query[kSecReturnData as String] = true
-            var out: AnyObject?
-            guard SecItemCopyMatching(query as CFDictionary, &out) == errSecSuccess, let data = out as? Data else { return nil }
-            return String(data: data, encoding: .utf8)
-        }
-        set {
-            SecItemDelete(base as CFDictionary)
-            guard let v = newValue, !v.isEmpty else { return }
-            var item = base
-            item[kSecValueData as String] = Data(v.utf8)
-            SecItemAdd(item as CFDictionary, nil)
-        }
+        var query = base
+        query[kSecReturnData as String] = true
+        var out: AnyObject?
+        guard SecItemCopyMatching(query as CFDictionary, &out) == errSecSuccess, let data = out as? Data else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
+
+    /// Replaces the key (nil/empty = remove). False if the Keychain refused: the caller tells the user.
+    @discardableResult static func setApiKey(_ v: String?) -> Bool {
+        SecItemDelete(base as CFDictionary)
+        guard let v, !v.isEmpty else { return true }
+        var item = base
+        item[kSecValueData as String] = Data(v.utf8)
+        let status = SecItemAdd(item as CFDictionary, nil)
+        if status != errSecSuccess { Log.write("keychain: SecItemAdd \(status)") }
+        return status == errSecSuccess
+    }
+}
+
+/// Jarvis's own MCP servers: ~/Library/Application Support/Jarvis/mcp.json, same shape as a .mcp.json.
+/// Both agents read it (JARVIS_MCP); servers from Claude/Copilot's own config are only shown.
+enum McpConfig {
+    static let url = URL(fileURLWithPath: Prefs.support + "/mcp.json")
+
+    /// Raw JSON per server, so fields the dashboard doesn't edit (env, headers…) survive a save.
+    static func load(from url: URL = url) -> [String: [String: Any]] {
+        guard let data = try? Data(contentsOf: url),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return [:] }
+        return json["mcpServers"] as? [String: [String: Any]] ?? [:]
+    }
+
+    static func save(_ servers: [String: [String: Any]], to url: URL = url) throws {
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let data = try JSONSerialization.data(withJSONObject: ["mcpServers": servers], options: [.prettyPrinted, .sortedKeys])
+        try data.write(to: url, options: .atomic)
     }
 }

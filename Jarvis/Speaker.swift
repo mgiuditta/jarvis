@@ -51,12 +51,13 @@ final class Spectrum {
 }
 
 /// Buffers scheduled on the player but not yet played. Touched from the main actor and the audio thread.
+/// Tagged with the speaker generation: completions of buffers dropped by stop() can't eat into the next answer's count.
 private final class Counter: @unchecked Sendable {
     private let lock = NSLock()
-    private var n = 0
+    private var n = 0, gen = 0
     var value: Int { lock.withLock { n } }
-    func add(_ d: Int) { lock.withLock { n = max(0, n + d) } }
-    func reset() { lock.withLock { n = 0 } }
+    func add(_ d: Int, generation: Int) { lock.withLock { if generation == gen { n = max(0, n + d) } } }
+    func reset(generation: Int) { lock.withLock { n = 0; gen = generation } }
 }
 
 /// Sentence-by-sentence TTS through our own AVAudioEngine, so the orb can run an FFT on the real voice.
@@ -84,8 +85,10 @@ private final class Counter: @unchecked Sendable {
 
     init() {
         engine.attach(player)
-        let spectrum = Spectrum(), levels = levels
-        engine.mainMixerNode.installTap(onBus: 0, bufferSize: 1024, format: nil) { buffer, _ in
+        nonisolated(unsafe) let spectrum = Spectrum()  // only ever touched on the tap thread
+        let levels = levels
+        // @Sendable: without it the closure is inferred @MainActor and traps on the audio thread in Swift 6 mode.
+        engine.mainMixerNode.installTap(onBus: 0, bufferSize: 1024, format: nil) { @Sendable buffer, _ in
             if let ch = buffer.floatChannelData?[0] { levels.set(spectrum.analyze(ch, count: Int(buffer.frameLength))) }
         }
     }
@@ -126,7 +129,7 @@ private final class Counter: @unchecked Sendable {
         queue.removeAll()
         synth.stopSpeaking(at: .immediate)
         player.stop()
-        rendering = false; scheduled.reset()
+        rendering = false; scheduled.reset(generation: generation)
         spokenDone = true
         levels.set(.zero)
     }
@@ -152,9 +155,11 @@ private final class Counter: @unchecked Sendable {
         utterance.voice = Self.voice()
         utterance.rate = Float(Prefs.speechRate) * (AVSpeechUtteranceMaximumSpeechRate - AVSpeechUtteranceMinimumSpeechRate) + AVSpeechUtteranceMinimumSpeechRate
         let gen = generation
-        synth.write(utterance) { [weak self] buffer in
+        synth.write(utterance) { @Sendable [weak self] buffer in
             guard let pcm = buffer as? AVAudioPCMBuffer else { return }
-            Task { @MainActor in self?.received(pcm, generation: gen) }
+            nonisolated(unsafe) let pcm2 = pcm  // handed over, the synth doesn't reuse it
+            // main queue, not a Task per chunk: FIFO is guaranteed, so chunks can't be played out of order
+            DispatchQueue.main.async { MainActor.assumeIsolated { self?.received(pcm2, generation: gen) } }
         }
     }
 
@@ -184,10 +189,10 @@ private final class Counter: @unchecked Sendable {
         guard let buffer = Self.float(pcm) else { return }
         prepare(buffer.format)
         let scheduled = scheduled
-        scheduled.add(1)
-        player.scheduleBuffer(buffer) { [weak self] in
-            scheduled.add(-1)
-            Task { @MainActor in self?.bufferPlayed(generation: gen) }
+        scheduled.add(1, generation: gen)
+        player.scheduleBuffer(buffer) { @Sendable [weak self] in
+            scheduled.add(-1, generation: gen)
+            DispatchQueue.main.async { MainActor.assumeIsolated { self?.bufferPlayed(generation: gen) } }
         }
     }
 
@@ -211,7 +216,7 @@ private final class Counter: @unchecked Sendable {
 
     /// Strip markdown so it isn't read aloud.
     static func plain(_ s: String) -> String {
-        s.replacing(/\[\[([^\]|]+)(\|[^\]]+)?\]\]/) { String($0.1) }
+        s.replacing(/\[\[(?:[^\]|]+\|)?([^\]]+)\]\]/) { String($0.1) }  // [[target|alias]] reads the alias
             .replacing(/\[([^\]]+)\]\([^)]+\)/) { String($0.1) }
             .replacing(/[*_`#>]/, with: "")
             .trimmingCharacters(in: .whitespacesAndNewlines)

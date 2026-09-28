@@ -32,7 +32,9 @@ final class OverlayPanel: NSPanel {
     /// The orb's corner follows the screen quadrant it was dragged to. Only while collapsed,
     /// so the orb doesn't jump across the open card mid-drag.
     private func updateAnchor() {
-        guard !app.expanded, let v = (screen ?? NSScreen.main)?.visibleFrame else { return }
+        guard let v = (screen ?? NSScreen.main)?.visibleFrame else { return }
+        if app.screenHeight != v.height { app.screenHeight = v.height }  // the panel's own screen, not the key one
+        guard !app.expanded else { return }
         let top = frame.midY > v.midY, left = frame.midX < v.midX
         if app.anchorTop != top { app.anchorTop = top }
         if app.anchorLeft != left { app.anchorLeft = left }
@@ -63,12 +65,13 @@ struct OverlayView: View {
     @State private var dropTargeted = false
     @State private var hovering = false
     @FocusState private var inputFocused: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         // The card opens toward the screen center from the orb's corner.
         VStack(alignment: app.anchorLeft ? .leading : .trailing, spacing: 10) {
             if app.expanded && !app.anchorTop {
-                card.transition(.opacity.combined(with: .move(edge: .bottom)))
+                card.transition(reduceMotion ? .opacity : .opacity.combined(with: .move(edge: .bottom)))
             }
             OrbView(state: app.state, colorHex: orbHex, levels: app.speaker.levels, hovering: hovering)
                 .frame(width: orbSize, height: orbSize)
@@ -81,16 +84,16 @@ struct OverlayView: View {
                     app.ingest(files: urls.filter(\.isFileURL)); return true
                 } isTargeted: { dropTargeted = $0 }
                 .contextMenu { MenuContent(app: app) }  // menu bar icon can hide behind the notch
-                .help("Jarvis: ⌥Space e detta con Wispr, trascina qui un file per /ingest, clic destro per il menu")
+                .help("Jarvis:\(shortcutLabel(.talk)) e detta con Wispr, trascina qui un file per /ingest, clic destro per il menu")
             if app.expanded && app.anchorTop {
-                card.transition(.opacity.combined(with: .move(edge: .top)))
+                card.transition(reduceMotion ? .opacity : .opacity.combined(with: .move(edge: .top)))
             }
         }
         .padding(20)  // room for the card's shadow
         .fixedSize()
         .onGeometryChange(for: CGSize.self) { $0.size } action: { onSize($0) }
-        .animation(.spring(duration: 0.35), value: app.expanded)
-        .animation(.spring(duration: 0.35), value: orbSize)
+        .animation(reduceMotion ? .easeOut(duration: 0.2) : .spring(duration: 0.35), value: app.expanded)
+        .animation(reduceMotion ? nil : .spring(duration: 0.35), value: orbSize)
         .animation(.easeOut(duration: 0.25), value: orbResting)
     }
 
@@ -111,9 +114,9 @@ struct OverlayView: View {
         }
         .padding(14)
         .frame(width: 460, alignment: .leading)
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-        .background(Color(red: 0.03, green: 0.01, blue: 0.06).opacity(0.78), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).strokeBorder(accent.opacity(0.35)))
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 18))
+        .background(Color(red: 0.03, green: 0.01, blue: 0.06).opacity(0.78), in: RoundedRectangle(cornerRadius: 18))
+        .overlay { RoundedRectangle(cornerRadius: 18).strokeBorder(accent.opacity(0.35)) }
         .shadow(color: .black.opacity(0.45), radius: 14, y: 6)
         .shadow(color: accent.opacity(0.2), radius: 20)
         .environment(\.colorScheme, .dark)  // HUD look, same in light mode
@@ -178,7 +181,7 @@ struct OverlayView: View {
                 VStack(alignment: .leading, spacing: 14) {
                     ForEach(app.history) { turn in
                         userBubble(turn.question)
-                        MessageText(text: turn.answer, accent: accent).opacity(0.7)
+                        MessageText(text: turn.answer, accent: accent).equatable().opacity(0.7)  // not re-parsed on every streamed token
                         CopyButton(text: turn.answer, label: "Copia")
                         Rectangle().fill(accent.opacity(0.2)).frame(height: 1)
                     }
@@ -195,7 +198,7 @@ struct OverlayView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.trailing, 6)
             }
-            .frame(maxHeight: (NSScreen.main?.visibleFrame.height ?? 800) * 0.5)
+            .frame(maxHeight: app.screenHeight * 0.5)
             .onChange(of: app.answer) { proxy.scrollTo("bottom", anchor: .bottom) }
             .onChange(of: app.tools.count) { proxy.scrollTo("bottom", anchor: .bottom) }
             .onChange(of: app.transcript) { proxy.scrollTo("bottom", anchor: .bottom) }
@@ -208,7 +211,7 @@ struct OverlayView: View {
             .font(.callout)
             .textSelection(.enabled)
             .padding(.horizontal, 12).padding(.vertical, 8)
-            .background(accent.opacity(0.22), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .background(accent.opacity(0.22), in: RoundedRectangle(cornerRadius: 14))
             .frame(maxWidth: .infinity, alignment: .trailing)
             .padding(.leading, 40)
     }
@@ -249,8 +252,8 @@ struct OverlayView: View {
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(.orange.opacity(0.5)))
+        .background(.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 12))
+        .overlay { RoundedRectangle(cornerRadius: 12).strokeBorder(.orange.opacity(0.5)) }
     }
 
     private var statusBox: some View {
@@ -326,24 +329,23 @@ struct OverlayView: View {
                     var reset = Transaction(); reset.disablesAnimations = true
                     withTransaction(reset) { sendProgress = 0 }
                     guard autoSending else { return }
-                    try? await Task.sleep(for: .milliseconds(20))
+                    do { try await Task.sleep(for: .milliseconds(20)) } catch { return }  // cancelled: no stray animation
                     withAnimation(.linear(duration: autoSendDelay)) { sendProgress = 1 }
-                    try? await Task.sleep(for: .seconds(autoSendDelay))
-                    if !Task.isCancelled { app.submit() }
+                    do { try await Task.sleep(for: .seconds(autoSendDelay)) } catch { return }
+                    app.submit()
                 }
             Text("⏎").font(.caption.monospaced()).foregroundStyle(.tertiary)
         }
         .padding(.horizontal, 10).padding(.vertical, 9)
-        .background(.black.opacity(0.3), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous)
-            .strokeBorder(accent.opacity(inputFocused ? 0.8 : 0.3), lineWidth: inputFocused ? 1.5 : 1))
+        .background(.black.opacity(0.3), in: RoundedRectangle(cornerRadius: 10))
+        .overlay {
+            RoundedRectangle(cornerRadius: 10).strokeBorder(accent.opacity(inputFocused ? 0.8 : 0.3), lineWidth: inputFocused ? 1.5 : 1)
+        }
         .overlay(alignment: .bottomLeading) {
             if autoSending {
-                GeometryReader { g in
-                    Capsule().fill(accent).frame(width: g.size.width * sendProgress, height: 2)
-                }
-                .frame(height: 2)
-                .padding(.horizontal, 8).padding(.bottom, 1)
+                Capsule().fill(accent).frame(height: 2)
+                    .scaleEffect(x: sendProgress, anchor: .leading)
+                    .padding(.horizontal, 8).padding(.bottom, 1)
             }
         }
         .animation(.easeOut(duration: 0.15), value: inputFocused)
@@ -357,7 +359,7 @@ struct OverlayView: View {
 
 /// An answer: the spoken lead in full size, then the on-screen details with block markdown
 /// (headings, bullet and numbered lists) that SwiftUI's inline-only markdown can't lay out.
-struct MessageText: View {
+struct MessageText: View, Equatable {
     let text: String
     let accent: Color
 
@@ -409,8 +411,8 @@ struct MessageText: View {
             .foregroundStyle(.primary.opacity(0.9))
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(10).padding(.trailing, 22)
-            .background(.black.opacity(0.4), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(accent.opacity(0.25)))
+            .background(.black.opacity(0.4), in: RoundedRectangle(cornerRadius: 8))
+            .overlay { RoundedRectangle(cornerRadius: 8).strokeBorder(accent.opacity(0.25)) }
             .overlay(alignment: .topTrailing) { CopyButton(text: code).padding(6) }
     }
 
@@ -457,7 +459,7 @@ struct CopyButton: View {
             Task { try? await Task.sleep(for: .seconds(1.2)); copied = false }
         } label: {
             if let label { Label(copied ? "Copiato" : label, systemImage: copied ? "checkmark" : "doc.on.doc").font(.caption) }
-            else { Image(systemName: copied ? "checkmark" : "doc.on.doc").font(.caption) }
+            else { Label(copied ? "Copiato" : "Copia", systemImage: copied ? "checkmark" : "doc.on.doc").labelStyle(.iconOnly).font(.caption) }
         }
         .buttonStyle(.plain)
         .foregroundStyle(.tertiary)

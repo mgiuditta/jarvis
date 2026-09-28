@@ -4,3 +4,5 @@ xcuserdata/
 *.xcuserstate
 .DS_Store
 .superpowers/
+.swiftpm/
+Tests/.build/

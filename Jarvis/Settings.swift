@@ -15,18 +15,26 @@ struct SettingsView: View {
     @AppStorage("copilotPath") private var copilotPath = ""
     @AppStorage("backend") private var backend = "claude"
     @AppStorage("autoSendDelay") private var autoSendDelay = 3.0
-    @State private var apiKey = Keychain.apiKey ?? ""
-    @State private var login = SMAppService.mainApp.status == .enabled
-
-    private let voices = AVSpeechSynthesisVoice.speechVoices()
-        .filter { $0.language == "it-IT" }
-        .sorted { ($0.quality.rawValue, $0.name) > ($1.quality.rawValue, $1.name) }
+    // Loaded in .task, not as initial values: those run every time SwiftUI rebuilds the view.
+    @State private var apiKey = ""
+    @State private var login = SMAppService.Status.notRegistered
+    @State private var voices: [AVSpeechSynthesisVoice] = []
+    @State private var orbColor = Color(hex: Prefs.orbHex)
+    @State private var keyError = false
 
     var body: some View {
         Form {
             Section("Attivazione") {
                 KeyboardShortcuts.Recorder("Parla con Jarvis", name: .talk)
-                Toggle("Avvia al login", isOn: $login).onChange(of: login) { _, on in LoginItem.set(on) }
+                Toggle("Avvia al login", isOn: Binding(get: { login == .enabled }, set: { on in
+                    LoginItem.set(on)
+                    login = SMAppService.mainApp.status  // the real outcome, not what was asked
+                    if login == .requiresApproval { SMAppService.openSystemSettingsLoginItems() }
+                }))
+                if login == .requiresApproval {
+                    Text("Da approvare in Impostazioni di Sistema › Generali › Elementi login.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
                 Stepper(value: $autoSendDelay, in: 0...10, step: 0.5) {
                     Text(autoSendDelay == 0 ? "Invio automatico: spento (solo ⏎)" : "Invio automatico dopo \(autoSendDelay.formatted()) s di silenzio")
                 }
@@ -36,7 +44,7 @@ struct SettingsView: View {
                     Text("Automatica (Luca, se installata)").tag("")
                     ForEach(voices, id: \.identifier) { v in Text("\(v.name) · \(quality(v))").tag(v.identifier) }
                 }
-                Slider(value: $speechRate, in: 0.3...0.7) { Text("Velocità") }
+                Slider(value: $speechRate, in: 0.3...0.7) { Text("Velocità") } minimumValueLabel: { Text("Lenta") } maximumValueLabel: { Text("Veloce") }
                 Button("Prova") { app.speaker.stop(); app.speaker.say("Ciao, sono Jarvis. Dimmi pure.") }
                 if !voices.contains(where: { $0.name.hasPrefix("Luca") && $0.quality == .premium }) {
                     Text("Per una voce migliore scarica \"Luca (Premium)\" da Impostazioni di Sistema › Accessibilità › Contenuti letti ad alta voce.")
@@ -44,7 +52,8 @@ struct SettingsView: View {
                 }
             }
             Section("Orb") {
-                ColorPicker("Colore", selection: Binding(get: { Color(hex: orbHex) }, set: { orbHex = $0.hex }), supportsOpacity: false)
+                ColorPicker("Colore", selection: $orbColor, supportsOpacity: false)
+                    .onChange(of: orbColor) { _, c in orbHex = c.hex }
                 KeyboardShortcuts.Recorder("Mostra / nascondi orb", name: .toggleOrb)
                 Toggle("Mostra l'orb solo quando parlo con Jarvis", isOn: $orbOnlyWhenActive)
             }
@@ -68,8 +77,12 @@ struct SettingsView: View {
                     SecureField("API key Anthropic (opzionale)", text: $apiKey, prompt: Text("vuota = login di Claude Code"))
                 }
                 Button("Salva e riavvia l'agente") {
-                    Keychain.apiKey = apiKey.isEmpty ? nil : apiKey
+                    keyError = !Keychain.setApiKey(apiKey)
                     app.restartAgent()
+                }
+                if keyError {
+                    Label("Non riesco a salvare la API key nel Portachiavi: vedi il log.", systemImage: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.red)
                 }
             }
             Section {
@@ -79,6 +92,13 @@ struct SettingsView: View {
         .formStyle(.grouped)
         .frame(width: 520)
         .padding(.vertical, 8)
+        .task {
+            apiKey = Keychain.apiKey ?? ""
+            login = SMAppService.mainApp.status
+            voices = AVSpeechSynthesisVoice.speechVoices()
+                .filter { $0.language == "it-IT" }
+                .sorted { ($0.quality.rawValue, $0.name) > ($1.quality.rawValue, $1.name) }
+        }
     }
 
     private func quality(_ v: AVSpeechSynthesisVoice) -> String {
@@ -90,17 +110,5 @@ struct SettingsView: View {
         panel.canChooseDirectories = true; panel.canChooseFiles = false
         panel.directoryURL = URL(fileURLWithPath: Prefs.vaultPath)
         if panel.runModal() == .OK, let url = panel.url { vaultPath = url.path }
-    }
-}
-
-extension Color {
-    init(hex: String) {
-        let v = UInt32(hex.trimmingCharacters(in: CharacterSet(charactersIn: "#")), radix: 16) ?? 0x9B5CFF
-        self.init(red: Double((v >> 16) & 0xFF) / 255, green: Double((v >> 8) & 0xFF) / 255, blue: Double(v & 0xFF) / 255)
-    }
-
-    var hex: String {
-        guard let c = NSColor(self).usingColorSpace(.sRGB) else { return "#9B5CFF" }
-        return String(format: "#%02X%02X%02X", Int(c.redComponent * 255), Int(c.greenComponent * 255), Int(c.blueComponent * 255))
     }
 }
