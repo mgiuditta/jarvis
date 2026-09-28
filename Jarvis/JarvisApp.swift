@@ -40,7 +40,7 @@ struct JarvisApp: App {
         let panel = OverlayPanel(app: app)
         self.panel = panel
         app.showOrb = { visible in visible ? panel.orderFrontRegardless() : panel.orderOut(nil) }
-        app.activate = { NSApp.activate(); panel.makeKeyAndOrderFront(nil) }
+        app.activate = { NSApp.activate(ignoringOtherApps: true); panel.makeKeyAndOrderFront(nil) }  // cooperative activate() can be refused from a hotkey
         app.setOrb(Prefs.orbVisible && !Prefs.orbOnlyWhenActive)
         KeyboardShortcuts.onKeyUp(for: .talk) { [app] in app.hotkey() }
         KeyboardShortcuts.onKeyUp(for: .toggleOrb) { [app] in app.setOrb(!app.orbShown, remember: true) }
@@ -115,7 +115,7 @@ struct MenuContent: View {
         Divider()
         Button("Apri vault in Obsidian") { openObsidian(Prefs.vaultPath) }
         Button("Apri la daily di oggi") {
-            openObsidian(Prefs.vaultPath + "/00-Inbox/daily/\(Date.now.formatted(.iso8601.year().month().day())).md")
+            openObsidian(Prefs.vaultPath + "/00-Inbox/daily/\(Date.now.formatted(Date.ISO8601FormatStyle(timeZone: .current).year().month().day())).md")
         }
         Button(app.orbShown ? "Nascondi orb  ⌥⇧Space" : "Mostra orb  ⌥⇧Space") { app.setOrb(!app.orbShown, remember: true) }
         Button("Apri la sessione in Terminale") { Terminal.resumeSession() }

@@ -4,6 +4,14 @@ import Foundation
 struct AgentEvent: Decodable {
     let type: String
     var id, delta, name, summary, path, op, question, text, message, session_id: String?
+    var commands: [SlashCommand]?
+}
+
+/// A skill or command Claude Code offers in this session (typed as /name).
+struct SlashCommand: Decodable, Hashable {
+    let name: String
+    let description: String
+    let argumentHint: String?
 }
 
 /// Runs `node agent.mjs` with cwd = vault and talks JSON lines. Restarts with backoff if it dies.
@@ -16,6 +24,7 @@ struct AgentEvent: Decodable {
 
     func start() {
         stopping = false
+        signal(SIGPIPE, SIG_IGN)  // writing to a just-died agent must fail, not kill the app
         guard let script = Bundle.main.url(forResource: "agent", withExtension: "mjs", subdirectory: "agent") else {
             return fail("agent.mjs non trovato nel bundle")
         }
@@ -39,9 +48,11 @@ struct AgentEvent: Decodable {
         let inPipe = Pipe(), outPipe = Pipe(), errPipe = Pipe()
         p.standardInput = inPipe; p.standardOutput = outPipe; p.standardError = errPipe
 
-        var buffer = Data()
+        nonisolated(unsafe) var buffer = Data()  // readabilityHandler calls are serial for one handle
         outPipe.fileHandleForReading.readabilityHandler = { [weak self] h in
-            buffer.append(h.availableData)
+            let data = h.availableData
+            guard !data.isEmpty else { h.readabilityHandler = nil; return }  // EOF: else it fires in a loop
+            buffer.append(data)
             while let nl = buffer.firstIndex(of: 0x0A) {
                 let line = buffer[..<nl]; buffer.removeSubrange(...nl)
                 guard let event = try? JSONDecoder().decode(AgentEvent.self, from: line) else { continue }
@@ -49,7 +60,9 @@ struct AgentEvent: Decodable {
             }
         }
         errPipe.fileHandleForReading.readabilityHandler = { h in
-            if let s = String(data: h.availableData, encoding: .utf8), !s.isEmpty { Log.write("agent stderr: \(s)") }
+            let data = h.availableData
+            guard !data.isEmpty else { h.readabilityHandler = nil; return }
+            if let s = String(data: data, encoding: .utf8) { Log.write("agent stderr: \(s)") }
         }
         p.terminationHandler = { [weak self] proc in
             Task { @MainActor in self?.terminated(proc) }
@@ -62,8 +75,10 @@ struct AgentEvent: Decodable {
     }
 
     func send(_ message: [String: Any]) {
-        guard let stdin, let data = try? JSONSerialization.data(withJSONObject: message) else { return }
-        stdin.write(data + Data([0x0A]))
+        guard let data = try? JSONSerialization.data(withJSONObject: message) else { return }
+        guard let stdin, (try? stdin.write(contentsOf: data + Data([0x0A]))) != nil else {
+            return fail("Agente non pronto, riprova tra un attimo.")  // unblocks a UI waiting on this prompt
+        }
     }
 
     func stop() {

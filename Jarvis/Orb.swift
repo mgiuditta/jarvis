@@ -8,6 +8,7 @@ enum OrbState: String { case idle, listening, thinking, speaking, confirm, error
 final class OrbWebView: WKWebView, WKNavigationDelegate {
     var state: OrbState = .idle
     var colorHex = "#9B5CFF"
+    var hovering = false
     private let levels: Levels
     private var timer: Timer?
 
@@ -40,8 +41,8 @@ final class OrbWebView: WKWebView, WKNavigationDelegate {
     // ponytail: skips pushes while hidden; WebKit throttles the page's own render loop for hidden windows
     private func push() {
         guard window?.isVisible == true else { return }
-        let level = state == .speaking ? levels.value.x : 0
-        evaluateJavaScript("window.orb && orb.set({state:'\(state.rawValue)',level:\(level),color:'\(colorHex)'})")
+        let v = state == .speaking ? levels.value : .zero
+        evaluateJavaScript("window.orb && orb.set({state:'\(state.rawValue)',level:\(v.x),low:\(v.y),high:\(v.w),hover:\(hovering),color:'\(colorHex)'})")
     }
 
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
@@ -58,11 +59,13 @@ struct OrbView: NSViewRepresentable {
     let state: OrbState
     let colorHex: String
     let levels: Levels
+    let hovering: Bool
 
     func makeNSView(context: Context) -> OrbWebView { OrbWebView(levels: levels) }
 
     func updateNSView(_ v: OrbWebView, context: Context) {
         v.state = state
         v.colorHex = colorHex
+        v.hovering = hovering
     }
 }

@@ -7,6 +7,13 @@ struct ToolItem: Identifiable {
     let text: String
 }
 
+/// A finished exchange, kept on screen above the current one.
+struct Turn: Identifiable {
+    let id = UUID()
+    let question: String
+    let answer: String
+}
+
 struct RecentCommand: Identifiable, Codable {
     var id = UUID()
     let label: String
@@ -17,6 +24,7 @@ struct RecentCommand: Identifiable, Codable {
 @MainActor @Observable final class AppState {
     var state: OrbState = .idle
     var transcript = ""     // last message sent
+    var history: [Turn] = []  // earlier exchanges of this session, oldest first
     var draft = ""          // what Wispr is typing into the input field
     var inputActive = false
     var focusRequest = 0    // bumped to (re)focus the input field
@@ -26,13 +34,16 @@ struct RecentCommand: Identifiable, Codable {
     var status = ""
     var expanded = false
     var orbShown = false
+    var anchorTop = false   // which screen corner the orb sits in: the card opens toward the center
+    var anchorLeft = false
+    private(set) var busy = false
+    var commands: [SlashCommand] = []   // for the "/" picker, from the agent
     var recent: [RecentCommand] = (try? JSONDecoder().decode([RecentCommand].self, from: UserDefaults.standard.data(forKey: "recent") ?? Data())) ?? []
 
     @ObservationIgnored let speaker = Speaker()
     @ObservationIgnored let agent = AgentClient()
     @ObservationIgnored var showOrb: ((Bool) -> Void)?
     @ObservationIgnored var activate: (() -> Void)?   // bring Jarvis forward so Wispr types into it
-    @ObservationIgnored private var busy = false
     @ObservationIgnored private var lastAnswer = ""
     @ObservationIgnored private var previousApp: NSRunningApplication?
     @ObservationIgnored private var collapseTask: Task<Void, Never>?
@@ -49,23 +60,30 @@ struct RecentCommand: Identifiable, Codable {
 
     // MARK: input
 
-    /// Hotkey: open the conversation; again = send now (or close it if empty). Also barges in on speech.
+    /// Hotkey: open the conversation (or bring the cursor back to it); again = send now (or close it if empty).
+    /// Also barges in on speech.
     func hotkey() {
         Log.write("hotkey (stato \(state.rawValue))")
         guard inputActive else { return listen() }
+        guard NSApp.isActive else { return focusInput() }
         draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? close() : submit()
     }
 
     /// Shows the input field focused, remembering which app to give focus back to.
     func listen() {
         speaker.stop()  // don't let Wispr hear Jarvis
-        if let front = NSWorkspace.shared.frontmostApplication, front != .current { previousApp = front }
         draft = ""
         inputActive = true
         state = restingState
         expand()
+        focusInput()
+    }
+
+    /// Makes Jarvis the key app and puts the cursor in the input field (after SwiftUI has built it).
+    func focusInput() {
+        if let front = NSWorkspace.shared.frontmostApplication, front != .current { previousApp = front }
         activate?()
-        focusRequest += 1
+        Task { @MainActor in focusRequest += 1 }
     }
 
     /// ⏎ or auto-send. The field stays open, so the next dictation continues the conversation.
@@ -99,7 +117,6 @@ struct RecentCommand: Identifiable, Codable {
 
     private func heard(_ text: String) {
         status = ""
-        transcript = text
         Log.write("utente: \(text)")
         let intent = Intent.route(text)
 
@@ -130,6 +147,11 @@ struct RecentCommand: Identifiable, Codable {
     /// Sends a prompt to the agent. `label` is what the user said (shown in "recenti").
     func ask(_ command: String, label: String? = nil) {
         speaker.stop()
+        if !transcript.isEmpty, !answer.isEmpty {
+            history.append(Turn(question: transcript, answer: answer))
+            history = Array(history.suffix(10))  // ponytail: last 10 on screen, the full session is in Claude Code
+        }
+        transcript = label ?? command
         answer = ""; tools = []
         busy = true
         state = .thinking
@@ -142,6 +164,7 @@ struct RecentCommand: Identifiable, Codable {
     func answerConfirmation(_ allow: Bool) {
         guard let c = confirmation else { return }
         confirmation = nil
+        speaker.beginAnswer()  // stop() muted the rest of the turn: speak what Claude says after the answer
         agent.send(["type": "confirm", "id": c.id, "allow": allow])
         tools.append(ToolItem(icon: allow ? "checkmark.circle" : "xmark.circle", text: allow ? "Confermato" : "Rifiutato"))
         state = restingState
@@ -165,6 +188,15 @@ struct RecentCommand: Identifiable, Codable {
         }
         guard !copied.isEmpty else { return }
         ask("/ingest " + copied.joined(separator: " "), label: "Ingest di \(files.map(\.lastPathComponent).joined(separator: ", "))")
+    }
+
+    /// "+" in the input field: same as dropping the files on the orb.
+    func pickFiles() {
+        let open = NSOpenPanel()
+        open.allowsMultipleSelection = true
+        NSApp.activate(ignoringOtherApps: true)
+        if open.runModal() == .OK, !open.urls.isEmpty { ingest(files: open.urls) }
+        activate?()
     }
 
     private func clipboard(ingest: Bool, question: String) {
@@ -208,6 +240,8 @@ struct RecentCommand: Identifiable, Codable {
 
     private func handle(_ e: AgentEvent) {
         switch e.type {
+        case "commands":
+            commands = e.commands ?? []
         case "partial_text":
             guard let d = e.delta else { return }
             answer += d
@@ -289,8 +323,11 @@ struct RecentCommand: Identifiable, Codable {
     }
 
     func newSession() {
-        agent.send(["type": "new_session"])
-        answer = ""; tools = []; transcript = ""
+        agent.send(["type": "new_session"])  // the old turn gets no done/error: reset here
+        speaker.stop()
+        busy = false; confirmation = nil
+        answer = ""; tools = []; transcript = ""; history = []
+        state = restingState
     }
 
     func restartAgent() {

@@ -12,6 +12,7 @@ struct SettingsView: View {
     @AppStorage("vaultPath") private var vaultPath = ""
     @AppStorage("nodePath") private var nodePath = ""
     @AppStorage("claudePath") private var claudePath = ""
+    @AppStorage("autoSendDelay") private var autoSendDelay = 3.0
     @State private var apiKey = Keychain.apiKey ?? ""
     @State private var login = SMAppService.mainApp.status == .enabled
 
@@ -24,6 +25,9 @@ struct SettingsView: View {
             Section("Attivazione") {
                 KeyboardShortcuts.Recorder("Parla con Jarvis", name: .talk)
                 Toggle("Avvia al login", isOn: $login).onChange(of: login) { _, on in LoginItem.set(on) }
+                Stepper(value: $autoSendDelay, in: 0...10, step: 0.5) {
+                    Text(autoSendDelay == 0 ? "Invio automatico: spento (solo ⏎)" : "Invio automatico dopo \(autoSendDelay.formatted()) s di silenzio")
+                }
             }
             Section("Voce") {
                 Picker("Voce", selection: $voiceID) {
