@@ -35,3 +35,10 @@ export function sessionPaths(id, vault, config) {
   const dir = path.join(config, 'projects', path.resolve(vault).replace(/[^a-zA-Z0-9]/g, '-'));
   return [path.join(dir, `${id}.jsonl`), path.join(dir, id)];
 }
+
+// Copilot asks per permission kind, not per tool: map it onto the same rules (shell = Bash, write = Write).
+export function copilotQuestion(req, vault, exists = fs.existsSync) {
+  if (req?.kind === 'shell') return confirmQuestion('Bash', { command: req.fullCommandText }, vault, exists);
+  if (req?.kind === 'write') return confirmQuestion('Write', { file_path: req.fileName }, vault, exists);
+  return null;
+}

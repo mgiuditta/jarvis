@@ -12,6 +12,8 @@ struct SettingsView: View {
     @AppStorage("vaultPath") private var vaultPath = ""
     @AppStorage("nodePath") private var nodePath = ""
     @AppStorage("claudePath") private var claudePath = ""
+    @AppStorage("copilotPath") private var copilotPath = ""
+    @AppStorage("backend") private var backend = "claude"
     @AppStorage("autoSendDelay") private var autoSendDelay = 3.0
     @State private var apiKey = Keychain.apiKey ?? ""
     @State private var login = SMAppService.mainApp.status == .enabled
@@ -46,18 +48,32 @@ struct SettingsView: View {
                 KeyboardShortcuts.Recorder("Mostra / nascondi orb", name: .toggleOrb)
                 Toggle("Mostra l'orb solo quando parlo con Jarvis", isOn: $orbOnlyWhenActive)
             }
-            Section("Vault e runtime") {
+            Section("Motore e cartella di lavoro") {
+                Picker("Motore", selection: $backend) {
+                    Text("Claude Code").tag("claude")
+                    Text("GitHub Copilot").tag("copilot")
+                }
+                .pickerStyle(.segmented)
                 HStack {
-                    TextField("Vault", text: $vaultPath, prompt: Text(Prefs.vaultPath))
+                    TextField("Cartella", text: $vaultPath, prompt: Text(Prefs.vaultPath))
                     Button("Scegli…") { chooseVault() }
                 }
                 TextField("Node", text: $nodePath, prompt: Text(Prefs.defaultNode()))
-                TextField("Claude Code", text: $claudePath, prompt: Text(Prefs.home + "/.local/bin/claude"))
-                SecureField("API key Anthropic (opzionale)", text: $apiKey, prompt: Text("vuota = login di Claude Code"))
+                if backend == "copilot" {
+                    TextField("Copilot CLI", text: $copilotPath, prompt: Text("/opt/homebrew/bin/copilot"))
+                    Text("Serve la Copilot CLI con login GitHub: nel Terminale `copilot`, poi `/login`.")
+                        .font(.caption).foregroundStyle(.secondary)
+                } else {
+                    TextField("Claude Code", text: $claudePath, prompt: Text(Prefs.home + "/.local/bin/claude"))
+                    SecureField("API key Anthropic (opzionale)", text: $apiKey, prompt: Text("vuota = login di Claude Code"))
+                }
                 Button("Salva e riavvia l'agente") {
                     Keychain.apiKey = apiKey.isEmpty ? nil : apiKey
                     app.restartAgent()
                 }
+            }
+            Section {
+                Text("© 2026 Matteo Giuditta · Licenza MIT").font(.caption).foregroundStyle(.secondary)
             }
         }
         .formStyle(.grouped)

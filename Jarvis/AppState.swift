@@ -38,6 +38,8 @@ struct RecentCommand: Identifiable, Codable {
     var anchorLeft = false
     private(set) var busy = false
     var commands: [SlashCommand] = []   // for the "/" picker, from the agent
+    var mcpServers: [McpServer] = []    // MCP dashboard, from the agent's mcp_status
+    var mcpUpdated: Date?
     var recent: [RecentCommand] = (try? JSONDecoder().decode([RecentCommand].self, from: UserDefaults.standard.data(forKey: "recent") ?? Data())) ?? []
 
     @ObservationIgnored let speaker = Speaker()
@@ -175,8 +177,9 @@ struct RecentCommand: Identifiable, Codable {
 
     /// Drag & drop: copy into 00-Inbox and run /ingest.
     /// Folders (e.g. a project in ~/Dev) are never copied: their absolute path goes in the field, to dictate what to do.
+    /// Outside the vault there is no 00-Inbox or /ingest: files get the same treatment as folders.
     func ingest(files: [URL]) {
-        let isDir = { (u: URL) in (try? u.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true }
+        let isDir = { (u: URL) in !Prefs.isVault || (try? u.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true }
         let folders = files.filter(isDir)
         if !folders.isEmpty {
             listen()
@@ -260,6 +263,9 @@ struct RecentCommand: Identifiable, Codable {
             guard let d = e.delta else { return }
             answer += d
             speaker.feed(d)
+        case "mcp_status":
+            mcpServers = (e.servers ?? []).sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+            mcpUpdated = .now
         case "tool_call":
             tools.append(ToolItem(icon: "wrench.and.screwdriver", text: "\(e.name ?? "tool") \(e.summary ?? "")"))
         case "file_changed":
@@ -349,6 +355,13 @@ struct RecentCommand: Identifiable, Codable {
         answer = ""; tools = []; transcript = ""; history = []
         state = restingState
     }
+
+    // MARK: MCP dashboard
+
+    func refreshMcp() { agent.send(["type": "mcp_status"]) }
+    func reconnectMcp(_ name: String) { agent.send(["type": "mcp_reconnect", "name": name]) }
+    /// After mcp.json changed: the agent re-reads it and answers with a fresh mcp_status.
+    func reloadMcp() { agent.send(["type": "mcp_reload"]) }
 
     func restartAgent() {
         agent.stop()

@@ -5,6 +5,17 @@ struct AgentEvent: Decodable {
     let type: String
     var id, delta, name, summary, path, op, question, text, message, session_id: String?
     var commands: [SlashCommand]?
+    var servers: [McpServer]?
+}
+
+/// An MCP server as the running agent sees it (mcp_status).
+struct McpServer: Decodable, Identifiable, Hashable {
+    var id: String { name }
+    let name: String
+    let status: String   // connected | failed | needs-auth | pending | disabled | stopped
+    var error: String?
+    var source: String?
+    var tools: [String]?
 }
 
 /// A skill or command Claude Code offers in this session (typed as /name).
@@ -14,7 +25,7 @@ struct SlashCommand: Decodable, Hashable {
     let argumentHint: String?
 }
 
-/// Runs `node agent.mjs` with cwd = vault and talks JSON lines. Restarts with backoff if it dies.
+/// Runs `node agent.mjs` (Claude) or `node copilot.mjs` (Copilot) with cwd = vault and talks JSON lines. Restarts with backoff if it dies.
 @MainActor final class AgentClient {
     var onEvent: ((AgentEvent) -> Void)?
     private var process: Process?
@@ -25,8 +36,13 @@ struct SlashCommand: Decodable, Hashable {
     func start() {
         stopping = false
         signal(SIGPIPE, SIG_IGN)  // writing to a just-died agent must fail, not kill the app
-        guard let script = Bundle.main.url(forResource: "agent", withExtension: "mjs", subdirectory: "agent") else {
-            return fail("agent.mjs non trovato nel bundle")
+        let name = Prefs.isCopilot ? "copilot" : "agent"
+        guard let script = Bundle.main.url(forResource: name, withExtension: "mjs", subdirectory: "agent") else {
+            return fail("\(name).mjs non trovato nel bundle")
+        }
+        var isDir: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: Prefs.vaultPath, isDirectory: &isDir), isDir.boolValue else {
+            return fail("Cartella di lavoro non trovata: \(Prefs.vaultPath). Sceglila in Impostazioni.")
         }
         let node = Prefs.nodePath
         guard FileManager.default.isExecutableFile(atPath: node) else { return fail("Node non trovato in \(node). Controlla le impostazioni.") }
@@ -41,7 +57,9 @@ struct SlashCommand: Decodable, Hashable {
                        "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin"].joined(separator: ":")
         env["JARVIS_VAULT"] = Prefs.vaultPath
         env["JARVIS_CLAUDE"] = Prefs.claudePath
-        env["JARVIS_STATE"] = Prefs.home + "/Library/Application Support/Jarvis/session.json"
+        env["JARVIS_COPILOT"] = Prefs.copilotPath
+        env["JARVIS_STATE"] = Prefs.sessionFile
+        env["JARVIS_MCP"] = McpConfig.url.path
         if let key = Keychain.apiKey { env["ANTHROPIC_API_KEY"] = key }
         p.environment = env
 

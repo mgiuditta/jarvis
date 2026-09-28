@@ -17,6 +17,8 @@ struct JarvisApp: App {
             Image(systemName: icon(delegate.app.state))
         }
         Settings { SettingsView(app: delegate.app) }
+        Window("Cruscotto MCP", id: "mcp") { McpDashboard(app: delegate.app) }
+            .defaultSize(width: 760, height: 560)
     }
 
     private func icon(_ s: OrbState) -> String {
@@ -32,8 +34,14 @@ struct JarvisApp: App {
 }
 
 @MainActor final class AppDelegate: NSObject, NSApplicationDelegate {
-    let app = AppState()
+    let app: AppState
     private var panel: OverlayPanel?
+
+    override init() {
+        Prefs.migrate()  // before AppState starts the agent with those settings
+        app = AppState()
+        super.init()
+    }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         Log.write("Jarvis avviato")
@@ -96,6 +104,7 @@ final class StatusItemDrop: NSView {
 
 struct MenuContent: View {
     let app: AppState
+    @Environment(\.openWindow) private var openWindow
 
     var body: some View {
         Text(statusLine)
@@ -107,16 +116,19 @@ struct MenuContent: View {
             }
             Divider()
         }
-        Button("Prepara la giornata") { app.ask("/prep-day") }
-        Button("Chiudi la giornata") { app.ask("/close-day") }
-        Button("Settimana") { app.ask("/weekly") }
-        Button("Sincronizza ticket") { app.ask("/pull-tickets") }
-        Button("Sincronizza MR") { app.ask("/pull-mrs") }
-        Divider()
-        Button("Apri vault in Obsidian") { openObsidian(Prefs.vaultPath) }
-        Button("Apri la daily di oggi") {
-            openObsidian(Prefs.vaultPath + "/00-Inbox/daily/\(Date.now.formatted(Date.ISO8601FormatStyle(timeZone: .current).year().month().day())).md")
+        if Prefs.isVault {
+            Button("Prepara la giornata") { app.ask("/prep-day") }
+            Button("Chiudi la giornata") { app.ask("/close-day") }
+            Button("Settimana") { app.ask("/weekly") }
+            Button("Sincronizza ticket") { app.ask("/pull-tickets") }
+            Button("Sincronizza MR") { app.ask("/pull-mrs") }
+            Divider()
+            Button("Apri vault in Obsidian") { openObsidian(Prefs.vaultPath) }
+            Button("Apri la daily di oggi") {
+                openObsidian(Prefs.vaultPath + "/00-Inbox/daily/\(Date.now.formatted(Date.ISO8601FormatStyle(timeZone: .current).year().month().day())).md")
+            }
         }
+        Button("Cruscotto MCP…") { openWindow(id: "mcp"); NSApp.activate(ignoringOtherApps: true) }
         Button(app.orbShown ? "Nascondi orb  ⌥⇧Space" : "Mostra orb  ⌥⇧Space") { app.setOrb(!app.orbShown, remember: true) }
         Button("Apri la sessione in Terminale") { Terminal.resumeSession() }
             .help("Stessa conversazione di Jarvis: non usarli tutti e due nello stesso momento")
@@ -147,14 +159,14 @@ struct MenuContent: View {
 /// Opens today's Jarvis session in Terminal via a .command file (no Automation permission needed).
 enum Terminal {
     static func resumeSession() {
-        let support = URL(fileURLWithPath: Prefs.home + "/Library/Application Support/Jarvis")
+        let support = URL(fileURLWithPath: Prefs.support)
         struct Saved: Decodable { let id: String }
-        let saved = (try? Data(contentsOf: support.appending(path: "session.json"))).flatMap { try? JSONDecoder().decode(Saved.self, from: $0) }
+        let saved = (try? Data(contentsOf: URL(fileURLWithPath: Prefs.sessionFile))).flatMap { try? JSONDecoder().decode(Saved.self, from: $0) }
         func q(_ s: String) -> String { "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'" }
         let resume = saved.map { " --resume " + q($0.id) } ?? ""
         let script = support.appending(path: "resume.command")
         do {
-            try "#!/bin/zsh\ncd \(q(Prefs.vaultPath)) && exec \(q(Prefs.claudePath))\(resume)\n".write(to: script, atomically: true, encoding: .utf8)
+            try "#!/bin/zsh\ncd \(q(Prefs.vaultPath)) && exec \(q(Prefs.isCopilot ? Prefs.copilotPath : Prefs.claudePath))\(resume)\n".write(to: script, atomically: true, encoding: .utf8)
             try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: script.path)
             NSWorkspace.shared.open(script)
         } catch {
