@@ -4,7 +4,7 @@ import Foundation
 /// everything else goes to Claude, which picks the vault skill itself. Pure, so Scripts/IntentCheck.swift can test it.
 enum Intent: Equatable {
     case agent(String)          // text sent to the agent as is
-    case stop, repeatLast, cancel
+    case stop, repeatLast, cancel, clear
     case yes, no                // answers to a need_confirmation
     case clipboard(ingest: Bool, question: String)
 
@@ -17,6 +17,7 @@ enum Intent: Equatable {
             .trimmingCharacters(in: CharacterSet(charactersIn: " .!?,"))
 
         switch s {
+        case "/clear", "nuova sessione", "ricomincia": return .clear
         case "stop", "basta", "fermati", "zitto": return .stop
         case "ripeti", "ripeti per favore", "puoi ripetere": return .repeatLast
         case "annulla", "lascia perdere", "annulla tutto": return .cancel

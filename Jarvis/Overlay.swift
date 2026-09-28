@@ -130,6 +130,7 @@ struct OverlayView: View {
             iconButton(muted ? "speaker.slash.fill" : "speaker.wave.2.fill", help: muted ? "Riattiva la voce" : "Muto") {
                 muted.toggle(); if muted { app.speaker.stop() }
             }
+            if app.busy { iconButton("stop.fill", help: "Ferma la risposta") { app.stopAnswer() } }
             iconButton("xmark", help: "Chiudi (Esc)") { app.close() }
         }
     }
@@ -264,7 +265,11 @@ struct OverlayView: View {
     @State private var sendProgress: CGFloat = 0
 
     private var autoSending: Bool {
-        autoSendDelay > 0 && !app.draft.hasPrefix("/") && !app.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let t = app.draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard autoSendDelay > 0, !t.isEmpty, !t.hasPrefix("/"), !t.hasPrefix("\"/") else { return false }  // a dropped folder path waits for ⏎
+        // A lone word is usually a dictation cut short: it waits for more or ⏎. Jarvis's own words ("stop", "sì") still go.
+        if case .agent = Intent.route(t), !t.contains(" ") { return false }
+        return true
     }
 
     private var input: some View {

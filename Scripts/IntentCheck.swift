@@ -8,7 +8,7 @@
             ("aggiorna la nota di Mario sul ticket BEN-12", .agent("aggiorna la nota di Mario sul ticket BEN-12")),
             ("Cosa ho fatto questa settimana?", .agent("Cosa ho fatto questa settimana?")),
             ("/ingest 00-Inbox/a.pdf", .agent("/ingest 00-Inbox/a.pdf")),
-            ("Stop.", .stop), ("ripeti", .repeatLast), ("Annulla", .cancel),
+            ("/clear", .clear), ("Nuova sessione.", .clear), ("Stop.", .stop), ("ripeti", .repeatLast), ("Annulla", .cancel),
             ("Sì.", .yes), ("no", .no), ("Stop, ma prima dimmi l'ora", .agent("Stop, ma prima dimmi l'ora")),
             ("Ingesta la clipboard", .clipboard(ingest: true, question: "Ingesta la clipboard")),
             ("riassumi quello che ho copiato", .clipboard(ingest: false, question: "riassumi quello che ho copiato")),

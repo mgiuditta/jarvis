@@ -55,7 +55,7 @@ function ask(question) {
 }
 function cancelPending() { for (const r of pending.values()) r(false); pending.clear(); }
 
-let q, input, day, turnId = null;
+let q, input, day, turnId = null, stopped = false;
 
 function start(fresh = false) {
   const saved = readState();
@@ -71,6 +71,7 @@ function start(fresh = false) {
       includePartialMessages: true,
       systemPrompt: { type: 'preset', preset: 'claude_code', append: style() },
       pathToClaudeCodeExecutable: process.env.JARVIS_CLAUDE || undefined,
+      extraArgs: { chrome: null }, // --chrome: Claude in Chrome tools, off by default in SDK sessions
       // Tools the vault settings don't pre-allow. Voice confirmation is only for destructive actions
       // (PreToolUse hook below); settings "deny" rules still apply before this is called.
       canUseTool: async (tool, toolInput) => tool === 'AskUserQuestion'
@@ -120,7 +121,8 @@ function handle(m) {
       if (b.type === 'tool_use') send({ type: 'tool_call', id: turnId, name: b.name, summary: summary(b.input) });
   } else if (m.type === 'result') {
     cancelPending();
-    if (m.subtype === 'success') send({ type: 'done', id: turnId, text: m.result ?? '', session_id: m.session_id });
+    if (stopped) { stopped = false; send({ type: 'done', id: turnId, text: '', session_id: m.session_id }); } // user hit stop: not an error
+    else if (m.subtype === 'success') send({ type: 'done', id: turnId, text: m.result ?? '', session_id: m.session_id });
     else send({ type: 'error', id: turnId, message: (m.errors ?? [m.subtype]).join('; ') });
   }
 }
@@ -136,12 +138,12 @@ createInterface({ input: process.stdin }).on('line', (line) => {
   let msg; try { msg = JSON.parse(line); } catch { return send({ type: 'error', message: `JSON non valido: ${line.slice(0, 80)}` }); }
   if (msg.type === 'prompt') {
     if (day !== today()) restart(); // daily session
-    turnId = msg.id;
+    turnId = msg.id; stopped = false;
     input.push({ type: 'user', message: { role: 'user', content: msg.text }, parent_tool_use_id: null, origin: { kind: 'human' } });
   } else if (msg.type === 'confirm') {
     pending.get(msg.id)?.(!!msg.allow); pending.delete(msg.id);
   } else if (msg.type === 'interrupt') {
-    cancelPending(); q.interrupt().catch(() => {});
+    stopped = true; cancelPending(); q.interrupt().catch(() => {});
   } else if (msg.type === 'new_session') {
     restart(true);
   }

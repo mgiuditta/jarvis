@@ -129,8 +129,9 @@ struct RecentCommand: Identifiable, Codable {
         }
         switch intent {
         case .stop:
-            speaker.stop()
-            if busy { agent.send(["type": "interrupt"]) }
+            stopAnswer()
+        case .clear:
+            newSession()
         case .cancel:
             if busy { speaker.stop(); agent.send(["type": "interrupt"]); say("Annullato.") } else { say("Non c'è niente da annullare.") }
         case .repeatLast:
@@ -173,7 +174,15 @@ struct RecentCommand: Identifiable, Codable {
     // MARK: files & clipboard
 
     /// Drag & drop: copy into 00-Inbox and run /ingest.
+    /// Folders (e.g. a project in ~/Dev) are never copied: their absolute path goes in the field, to dictate what to do.
     func ingest(files: [URL]) {
+        let isDir = { (u: URL) in (try? u.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true }
+        let folders = files.filter(isDir)
+        if !folders.isEmpty {
+            listen()
+            draft = folders.map { "\"\($0.path)\"" }.joined(separator: " ") + " "
+        }
+        let files = files.filter { !isDir($0) }
         let inbox = URL(fileURLWithPath: Prefs.vaultPath).appending(path: "00-Inbox")
         var copied: [String] = []
         for file in files {
@@ -194,6 +203,7 @@ struct RecentCommand: Identifiable, Codable {
     func pickFiles() {
         let open = NSOpenPanel()
         open.allowsMultipleSelection = true
+        open.canChooseDirectories = true
         NSApp.activate(ignoringOtherApps: true)
         if open.runModal() == .OK, !open.urls.isEmpty { ingest(files: open.urls) }
         activate?()
@@ -201,7 +211,9 @@ struct RecentCommand: Identifiable, Codable {
 
     private func clipboard(ingest: Bool, question: String) {
         let pb = NSPasteboard.general
-        let text = pb.string(forType: .string)
+        // Finder's ⌘C on a file or folder: the string is just the name, the path is in the file URLs.
+        let copied = (pb.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL]) ?? []
+        let text = copied.isEmpty ? pb.string(forType: .string) : copied.map(\.path).joined(separator: "\n")
         guard ingest else {
             guard let text, !text.isEmpty else { return say("Nella clipboard non c'è testo.") }
             return ask("\(question)\n\nContenuto della clipboard:\n\(text)", label: question)
@@ -241,7 +253,9 @@ struct RecentCommand: Identifiable, Codable {
     private func handle(_ e: AgentEvent) {
         switch e.type {
         case "commands":
-            commands = e.commands ?? []
+            // /clear is a CLI built-in the SDK doesn't list: Jarvis handles it itself (Intent.clear).
+            commands = [SlashCommand(name: "clear", description: "Nuova sessione, azzera la conversazione", argumentHint: nil)]
+                + (e.commands ?? []).filter { $0.name != "clear" }
         case "partial_text":
             guard let d = e.delta else { return }
             answer += d
@@ -320,6 +334,12 @@ struct RecentCommand: Identifiable, Codable {
         recent.insert(c, at: 0)
         recent = Array(recent.prefix(5))
         UserDefaults.standard.set(try? JSONEncoder().encode(recent), forKey: "recent")
+    }
+
+    /// Stop button / "stop": silence and interrupt Claude mid-answer. The agent closes the turn with a done.
+    func stopAnswer() {
+        speaker.stop()
+        if busy { agent.send(["type": "interrupt"]) }
     }
 
     func newSession() {
