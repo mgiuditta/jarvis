@@ -1,16 +1,17 @@
 import SwiftUI
 
-/// Menu bar › Cruscotto MCP: what the running agent sees, plus Jarvis's own servers to add/remove.
-struct McpDashboard: View {
+/// Menu bar › Cruscotto: Jarvis at a glance, the MCP servers the agent sees (plus Jarvis's own to add/remove), the log.
+struct Dashboard: View {
     let app: AppState
-    @State private var selection: Pane?
+    @State private var selection: Pane? = .overview
     @State private var config: [String: [String: Any]] = [:]  // loaded in onAppear, not on every rebuild
     @State private var adding = false
     @State private var saveError: String?
     @State private var agentSilent = false  // no mcp_status after a few seconds: agent down or stuck
+    @State private var refreshing = false  // until the next mcp_status, or the agent is declared silent
 
     /// Enum, not a sentinel string: a server can't be named like the log entry.
-    private enum Pane: Hashable { case server(String), log }
+    fileprivate enum Pane: Hashable { case overview, server(String), log }
 
     /// Agent's view first; Jarvis servers it didn't load (bad command, just added) still show up.
     private var rows: [McpServer] {
@@ -26,14 +27,19 @@ struct McpDashboard: View {
         } detail: {
             detail
         }
-        .navigationTitle("Cruscotto MCP")
-        .navigationSubtitle("\(Prefs.isCopilot ? "GitHub Copilot" : "Claude Code") · \(summary)")
+        .navigationTitle("Cruscotto")
+        .navigationSubtitle("\(Prefs.isCopilot ? "GitHub Copilot" : "Claude Code") · \(app.state.label)")
         .toolbar {
             ToolbarItemGroup {
-                Button { app.refreshMcp() } label: { Label("Aggiorna", systemImage: "arrow.clockwise") }
-                    .help("Rileggi lo stato dall'agente")
+                Button { refreshing = true; app.refreshMcp(); waitForAgent() } label: {
+                    Label("Aggiorna", systemImage: "arrow.clockwise")
+                }
+                .help("Rileggi lo stato dall'agente (⌘R)")
+                .keyboardShortcut("r")
+                .disabled(refreshing && !agentSilent)
                 Button { adding = true } label: { Label("Aggiungi server", systemImage: "plus") }
-                    .help("Aggiungi un server MCP a Jarvis")
+                    .help("Aggiungi un server MCP a Jarvis (⌘N)")
+                    .keyboardShortcut("n")
             }
         }
         .sheet(isPresented: $adding) { AddServerSheet(existing: Set(config.keys)) { name, entry in add(name, entry) } }
@@ -42,48 +48,46 @@ struct McpDashboard: View {
             Button("OK") {}
         } message: { Text(saveError ?? "") }
         .onAppear { config = McpConfig.load(); app.refreshMcp(); waitForAgent() }
+        .onChange(of: app.mcpUpdated) { refreshing = false }
     }
 
     private var sidebar: some View {
         List(selection: $selection) {
-            Section("Server") {
+            Label("Panoramica", systemImage: "gauge.with.dots.needle.33percent").tag(Pane.overview)
+            Section("Server MCP · \(summary)") {
                 ForEach(rows) { s in
                     ServerRow(server: s, owned: config[s.name] != nil).tag(Pane.server(s.name))
+                }
+                // Inline, not an overlay: Panoramica and Log stay reachable while the agent is down.
+                if app.mcpUpdated == nil && agentSilent {
+                    Label("L'agente non risponde", systemImage: "bolt.horizontal.circle").foregroundStyle(.secondary)
+                    Button("Riavvia l'agente") { restartAgent() }
+                } else if app.mcpUpdated == nil {
+                    HStack { ProgressView().controlSize(.small); Text("Chiedo lo stato…").foregroundStyle(.secondary) }
+                } else if rows.isEmpty {
+                    Text("Nessun server: aggiungine uno con +.").foregroundStyle(.secondary)
                 }
             }
             Section { Label("Log di Jarvis", systemImage: "text.alignleft").tag(Pane.log) }
         }
-        .overlay {
-            if app.mcpUpdated == nil && agentSilent {
-                ContentUnavailableView {
-                    Label("L'agente non risponde", systemImage: "bolt.horizontal.circle")
-                } description: {
-                    Text("Controlla motore e cartella in Impostazioni, o il log.")
-                } actions: {
-                    Button("Riavvia l'agente") { agentSilent = false; app.restartAgent(); waitForAgent() }
-                }
-            } else if app.mcpUpdated == nil {
-                ProgressView("Chiedo lo stato all'agente…")
-            } else if rows.isEmpty {
-                ContentUnavailableView {
-                    Label("Nessun server MCP", systemImage: "puzzlepiece.extension")
-                } description: {
-                    Text("Aggiungine uno con +: funziona sia con Claude sia con Copilot.")
-                }
-            }
-        }
     }
 
     @ViewBuilder private var detail: some View {
-        if selection == .log {
+        if selection == .overview {
+            Overview(app: app, servers: rows, agentSilent: app.mcpUpdated == nil && agentSilent,
+                     restartAgent: restartAgent, select: { selection = $0 })
+        } else if selection == .log {
             LogTail()
         } else if case .server(let name) = selection, let s = rows.first(where: { $0.name == name }) {
             ServerDetail(server: s, config: config[s.name], app: app, remove: { remove(s.name) })
+                .id(s.name)  // fresh state (reconnecting, confirm) per server
         } else {
             ContentUnavailableView("Scegli un server", systemImage: "sidebar.left",
                                    description: Text("Stato, tool e configurazione compaiono qui."))
         }
     }
+
+    private func restartAgent() { agentSilent = false; app.restartAgent(); waitForAgent() }
 
     @State private var waitTask: Task<Void, Never>?
     private func waitForAgent() {
@@ -110,12 +114,124 @@ struct McpDashboard: View {
         var next = config
         next[name] = nil
         persist(next)
-        selection = nil
+        selection = .overview
     }
 
     private func persist(_ next: [String: [String: Any]]) {
         do { try McpConfig.save(next); config = next; app.reloadMcp() }
         catch { saveError = error.localizedDescription }
+    }
+}
+
+/// Home pane: the agent, the conversation, what's worth a click. Everything else has its own pane or Settings.
+private struct Overview: View {
+    let app: AppState
+    let servers: [McpServer]
+    let agentSilent: Bool
+    let restartAgent: () -> Void
+    let select: (Dashboard.Pane) -> Void
+    @AppStorage("muted") private var muted = false
+    @AppStorage("vaultPath") private var vaultPath = ""  // observed: the vault section follows a folder change
+
+    private var folder: String { vaultPath.isEmpty ? Prefs.vaultPath : vaultPath }
+    private var troubled: [McpServer] { servers.filter { $0.status != "connected" && $0.status != "disabled" } }
+
+    var body: some View {
+        Form {
+            Section {
+                LabeledContent("Stato") {
+                    Label(agentSilent ? "L'agente non risponde" : app.state.label,
+                          systemImage: agentSilent ? "bolt.horizontal.circle" : app.state.symbol)
+                        .foregroundStyle(agentSilent || app.state == .error ? .red : .primary)
+                }
+                if app.state == .error, !app.status.isEmpty {
+                    Text(app.status).foregroundStyle(.red).textSelection(.enabled)
+                }
+                LabeledContent("Motore", value: Prefs.isCopilot ? "GitHub Copilot" : "Claude Code")
+                LabeledContent("Cartella") {
+                    Button(folder.replacingOccurrences(of: Prefs.home, with: "~")) {
+                        NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: folder)
+                    }
+                    .buttonStyle(.link)
+                    .help("Mostra nel Finder")
+                }
+                LabeledContent("Dettatura", value: Prefs.dictation == "jarvis" ? "Jarvis (microfono)" : "Wispr Flow")
+                Toggle("Voce muta", isOn: $muted).onChange(of: muted) { _, m in if m { app.speaker.stop() } }
+                HStack {
+                    Button("Parla con Jarvis") { app.listen() }.keyboardShortcut(.return)
+                    Button("Nuova sessione") { app.newSession() }
+                    Button("Apri in Terminale") { Terminal.resumeSession() }
+                        .help("Stessa conversazione di Jarvis: non usarli tutti e due nello stesso momento")
+                    Spacer()
+                    Button("Riavvia l'agente", action: restartAgent)
+                }
+            } header: {
+                Text("Jarvis").font(.title2.weight(.semibold)).foregroundStyle(.primary).textCase(nil)
+                    .accessibilityAddTraits(.isHeader)
+            }
+
+            Section("Conversazione") {
+                if app.transcript.isEmpty {
+                    Text("Nessuna domanda in questa sessione.").foregroundStyle(.secondary)
+                } else {
+                    LabeledContent("Ultima domanda") { Text(app.transcript).lineLimit(2).textSelection(.enabled) }
+                    if app.busy {
+                        HStack {
+                            ProgressView().controlSize(.small)
+                            Text(app.tools.last?.text ?? "Al lavoro…").lineLimit(1).foregroundStyle(.secondary)
+                            Spacer()
+                            Button("Ferma") { app.stopAnswer() }
+                        }
+                    } else if !app.answer.isEmpty {
+                        Text(Speaker.spokenPart(of: app.answer)).lineLimit(4).foregroundStyle(.secondary).textSelection(.enabled)
+                    }
+                    LabeledContent("Scambi", value: "\(app.history.count + 1)")
+                }
+            }
+
+            if !app.recent.isEmpty {
+                Section("Recenti") {
+                    ForEach(app.recent) { r in
+                        Button { app.ask(r.command, label: r.label) } label: {
+                            Label(r.label, systemImage: "arrow.counterclockwise").lineLimit(1)
+                        }
+                        .buttonStyle(.plain)
+                        .help("Richiedi di nuovo: \(r.command)")
+                    }
+                }
+            }
+
+            if FileManager.default.fileExists(atPath: folder + "/00-Inbox") {  // = Prefs.isVault, observed
+                Section("Vault") {
+                    HStack {
+                        Button("Prepara la giornata") { app.ask("/prep-day") }
+                        Button("Chiudi la giornata") { app.ask("/close-day") }
+                        Button("Settimana") { app.ask("/weekly") }
+                    }
+                    HStack {
+                        Button("Sincronizza ticket") { app.ask("/pull-tickets") }
+                        Button("Sincronizza MR") { app.ask("/pull-mrs") }
+                        Spacer()
+                        Button("Daily in Obsidian") { openObsidian(todayDaily) }
+                    }
+                }
+            }
+
+            Section("Server MCP") {
+                LabeledContent("Connessi", value: "\(servers.count(where: { $0.status == "connected" })) di \(servers.count)")
+                ForEach(troubled) { s in
+                    Button { select(.server(s.name)) } label: {
+                        LabeledContent(s.name) { McpStatusBadge(status: s.status) }
+                    }
+                    .buttonStyle(.plain)
+                    .help("Apri \(s.name)")
+                }
+                if !servers.isEmpty && troubled.isEmpty {
+                    Label("Tutti a posto", systemImage: "checkmark.circle.fill").foregroundStyle(.green)
+                }
+            }
+        }
+        .formStyle(.grouped)
     }
 }
 
@@ -176,10 +292,15 @@ private struct ServerRow: View {
             if let n = server.tools?.count, n > 0 {
                 Text("\(n)").monospacedDigit().font(.caption).foregroundStyle(.secondary)
                     .help("\(n) tool")
+                    .accessibilityLabel("\(n) tool")
             }
-            if owned { Image(systemName: "person.crop.circle").foregroundStyle(.tint).help("Aggiunto in Jarvis") }
+            if owned {
+                Image(systemName: "person.crop.circle").foregroundStyle(.tint).help("Aggiunto in Jarvis")
+                    .accessibilityLabel("Aggiunto in Jarvis")
+            }
         }
         .padding(.vertical, 2)
+        .accessibilityElement(children: .combine)
     }
 }
 
@@ -189,6 +310,7 @@ private struct ServerDetail: View {
     let app: AppState
     let remove: () -> Void
     @State private var confirmRemove = false
+    @State private var reconnecting = false  // until the next mcp_status, at most 10s
 
     var body: some View {
         Form {
@@ -200,10 +322,15 @@ private struct ServerDetail: View {
                         .accessibilityLabel("Errore: \(error)")
                 }
                 if server.status != "not-loaded" {
-                    Button("Riconnetti") { app.reconnectMcp(server.name) }
+                    HStack {
+                        Button("Riconnetti") { reconnecting = true; app.reconnectMcp(server.name) }
+                            .disabled(reconnecting)
+                        if reconnecting { ProgressView().controlSize(.small) }
+                    }
                 }
             } header: {
                 Text(server.name).font(.title2.weight(.semibold)).foregroundStyle(.primary).textCase(nil)
+                    .accessibilityAddTraits(.isHeader)
             }
 
             if let config {
@@ -227,6 +354,12 @@ private struct ServerDetail: View {
             }
         }
         .formStyle(.grouped)
+        .onChange(of: app.mcpUpdated) { reconnecting = false }
+        .task(id: reconnecting) {
+            guard reconnecting else { return }
+            do { try await Task.sleep(for: .seconds(10)) } catch { return }
+            reconnecting = false
+        }
         .confirmationDialog("Rimuovere \(server.name) da Jarvis?", isPresented: $confirmRemove) {
             Button("Rimuovi", role: .destructive, action: remove)
         } message: {
@@ -267,9 +400,10 @@ private struct AddServerSheet: View {
         return name.isEmpty || name.range(of: "^[A-Za-z0-9_-]+$", options: .regularExpression) != nil
             ? nil : "Solo lettere, numeri, - e _."
     }
+    private var urlValid: Bool { URL(string: url.trimmingCharacters(in: .whitespaces))?.scheme?.hasPrefix("http") == true }
     private var valid: Bool {
         !name.isEmpty && nameError == nil
-            && (kind == "stdio" ? !command.trimmingCharacters(in: .whitespaces).isEmpty : URL(string: url)?.scheme?.hasPrefix("http") == true)
+            && (kind == "stdio" ? !command.trimmingCharacters(in: .whitespaces).isEmpty : urlValid)
     }
 
     var body: some View {
@@ -291,6 +425,9 @@ private struct AddServerSheet: View {
                         .font(.caption).foregroundStyle(.secondary)
                 } else {
                     TextField("URL", text: $url, prompt: Text("https://example.com/mcp"))
+                    if !url.isEmpty && !urlValid {
+                        Text("Deve iniziare con http:// o https://").font(.caption).foregroundStyle(.red)
+                    }
                 }
             }
         }
@@ -318,17 +455,14 @@ private struct LogTail: View {
     @State private var lines: [String] = []
 
     var body: some View {
-        ScrollViewReader { proxy in
-            ScrollView {
-                Text(lines.joined(separator: "\n"))
-                    .font(.system(.caption, design: .monospaced))
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding()
-                Color.clear.frame(height: 1).id("end")
-            }
-            .onChange(of: lines) { proxy.scrollTo("end") }
+        ScrollView {
+            Text(lines.joined(separator: "\n"))
+                .font(.system(.caption, design: .monospaced))
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding()
         }
+        .defaultScrollAnchor(.bottom)  // follows new lines only while already at the bottom
         .toolbar {
             ToolbarItem {
                 Button { NSWorkspace.shared.open(Log.dir) } label: { Label("Apri cartella log", systemImage: "folder") }

@@ -49,6 +49,13 @@ enum Prefs {
     static var speechRate: Double { d.object(forKey: "speechRate") as? Double ?? 0.5 }
     static var orbVisible: Bool { d.object(forKey: "orbVisible") as? Bool ?? true }
     static var orbOnlyWhenActive: Bool { d.bool(forKey: "orbOnlyWhenActive") }
+    /// "wispr" (Wispr Flow types into the field) | "jarvis" (built-in Dictation).
+    static var dictation: String { d.string(forKey: "dictation").nonEmpty ?? "wispr" }
+    /// First-run setup done. Whoever already chose a folder before onboarding existed counts as done.
+    static var onboarded: Bool {
+        get { d.bool(forKey: "onboarded") || d.string(forKey: "vaultPath").nonEmpty != nil }
+        set { d.set(newValue, forKey: "onboarded") }
+    }
 
     /// Bundle id moved from com.mgiuditta.jarvis: bring the old settings (paths, hotkeys, orb) over once.
     static func migrate() {

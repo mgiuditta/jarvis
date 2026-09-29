@@ -1,7 +1,32 @@
 import SwiftUI
 import WebKit
 
-enum OrbState: String { case idle, listening, thinking, speaking, confirm, error }
+enum OrbState: String {
+    case idle, listening, thinking, speaking, confirm, error
+
+    /// Menu bar, menu and dashboard say the same thing.
+    var label: String {
+        switch self {
+        case .idle: "Pronto"
+        case .listening: "Aspetto la dettatura"
+        case .thinking: "Sta pensando"
+        case .speaking: "Sta parlando"
+        case .confirm: "Attende conferma"
+        case .error: "Errore"
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .idle: "circle.circle"
+        case .listening: "waveform.circle.fill"
+        case .thinking: "ellipsis.circle.fill"
+        case .speaking: "speaker.wave.2.circle.fill"
+        case .confirm: "questionmark.circle.fill"
+        case .error: "exclamationmark.circle.fill"
+        }
+    }
+}
 
 /// The 3D orb is a three.js page (orb/orb.html in the bundle) in a WKWebView.
 /// Swift pushes state, voice level and color ~30×/s; the page never talks back.

@@ -15,6 +15,7 @@ struct SettingsView: View {
     @AppStorage("copilotPath") private var copilotPath = ""
     @AppStorage("backend") private var backend = "claude"
     @AppStorage("autoSendDelay") private var autoSendDelay = 3.0
+    @AppStorage("dictation") private var dictation = "wispr"
     // Loaded in .task, not as initial values: those run every time SwiftUI rebuilds the view.
     @State private var apiKey = ""
     @State private var login = SMAppService.Status.notRegistered
@@ -35,6 +36,11 @@ struct SettingsView: View {
                     Text("Da approvare in Impostazioni di Sistema › Generali › Elementi login.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
+                Picker("Dettatura", selection: $dictation) {
+                    Text("Wispr Flow").tag("wispr")
+                    Text("Jarvis (microfono)").tag("jarvis")
+                }
+                .onChange(of: dictation) { _, d in if d == "jarvis" { Task { _ = await Dictation.requestPermissions() } } }
                 Stepper(value: $autoSendDelay, in: 0...10, step: 0.5) {
                     Text(autoSendDelay == 0 ? "Invio automatico: spento (solo ⏎)" : "Invio automatico dopo \(autoSendDelay.formatted()) s di silenzio")
                 }

@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 @testable import JarvisCore
 
@@ -14,8 +15,21 @@ struct IntentTests {
         ("Sì.", .yes), ("no", .no),
         ("Ingesta la clipboard", .clipboard(ingest: true, question: "Ingesta la clipboard")),
         ("riassumi quello che ho copiato", .clipboard(ingest: false, question: "riassumi quello che ho copiato")),
+        ("Domanda veloce: quanto fa 7 per 8?", .quick("quanto fa 7 per 8?")),
+        ("Jarvis, cosa vedi sullo schermo?", .screen("cosa vedi sullo schermo?")),
+        ("Riassumi questa pagina", .front("Riassumi questa pagina")),
+        ("traduci il testo selezionato", .front("traduci il testo selezionato")),
     ])
     func routes(input: String, expected: Intent) {
         #expect(Intent.route(input) == expected)
+    }
+
+    @Test(arguments: [
+        ("jarvis://ask?q=riassumi%20la%20daily", "riassumi la daily"),
+        ("jarvis://listen", ""),
+        ("https://example.com/?q=x", nil),
+    ])
+    func prefill(url: String, expected: String?) {
+        #expect(Intent.prefill(from: URL(string: url)!) == expected)
     }
 }

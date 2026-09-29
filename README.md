@@ -1,14 +1,23 @@
 # Jarvis
 Tramite macOS tra te (dettatura con Wispr Flow) e una sessione Claude Code o GitHub Copilot in una cartella di lavoro (di default il vault Obsidian `~/Dev/sbu-brain`): orb olografico 3D (three.js), risposta a voce. © 2026 Matteo Giuditta, licenza MIT (`LICENSE`).
 - Requisiti: Apple Silicon, Node, Wispr Flow e uno dei due motori: Claude Code con login (`~/.local/bin/claude`) oppure Copilot CLI con login GitHub (`copilot`, poi `/login`). Per compilare: Xcode 26+.
-- Da passare ad altri: `Scripts/release.sh` crea `build/release/Jarvis-<versione>.dmg` firmato Developer ID e notarizzato (setup una tantum nell'intestazione dello script). Chi lo riceve trascina Jarvis in Applicazioni, poi in Impostazioni sceglie motore e cartella.
+- Da passare ad altri: `Scripts/release.sh` crea `build/release/Jarvis-<versione>.dmg` firmato Developer ID e notarizzato (setup una tantum nell'intestazione dello script). Chi lo riceve trascina Jarvis in Applicazioni: al primo avvio la configurazione guidata (anche da menu › "Configurazione guidata…") fa scegliere motore, dettatura e vault. Con "Creane uno nuovo" l'agente ti intervista a round (skill grill-me, scritta nel vault), ti mostra la mappa del second brain (cartelle, cosa tracciare, storico da importare, skill, routine) e la crea solo dopo il tuo sì.
 - Installa: `Scripts/install.sh` (test, build Release firmata con il team personale, chiude Jarvis, copia in /Applications e lo riapre).
+- Dettatura: Wispr Flow oppure quella di Jarvis (Impostazioni › Dettatura: riconoscimento vocale Apple, chiede Microfono e Riconoscimento vocale; il microfono è spento mentre Jarvis pensa o parla).
 - Usa: `⌥Space` apre il campo, detti con Wispr, dopo 3 s di testo fermo parte da solo (regolabile in Impostazioni, 0 = solo ⏎) (`⏎` subito, `Esc` annulla). Trascina un file sull'orb o sull'icona in menu bar per `/ingest`. Una cartella (es. un progetto in `~/Dev`) non viene copiata: il suo path assoluto finisce nel campo e detti cosa farne.
 - Comandi: chiedi quello che vuoi, Claude sceglie la skill del vault. Jarvis gestisce solo "stop" (o il pulsante ■ mentre risponde), "ripeti", "annulla", `/clear` ("nuova sessione") e la clipboard.
+- Integrazioni macOS:
+  - **Comandi Rapidi / Spotlight / Siri**: azione "Chiedi a Jarvis", restituisce la risposta, così uno shortcut può passarla avanti.
+  - **Link** `jarvis://ask?q=…` (Raycast, Alfred, note) e `jarvis://`: il testo va nel campo e aspetta `⏎`, perché un link lo può aprire qualsiasi pagina web.
+  - **Servizi** (clic destro): "Chiedi a Jarvis" sul testo selezionato, "Invia a Jarvis" sui file del Finder (`/ingest`). Se non compaiono: Impostazioni di Sistema › Tastiera › Abbreviazioni › Servizi.
+  - **Contesto**: "riassumi questa pagina", "traduci il testo selezionato", "questo file"… aggiungono finestra, documento e selezione dell'app da cui l'hai chiamato (permesso Accessibilità). "Cosa vedi sullo schermo" ci aggiunge uno screenshot della finestra (permesso Registrazione schermo, poi riavvia Jarvis).
+  - **Domanda veloce** / "al volo" …: risponde il modello on-device di Apple Intelligence (macOS 26+), senza l'agente. Senza Apple Intelligence risponde l'agente.
+  - **Notifica** quando una risposta lunga (> 15 s) finisce mentre sei in un'altra app. Cliccandola si riapre la conversazione.
+  - Dettatura di Jarvis su macOS 26+: modello SpeechAnalyzer on-device, scaricato alla prima dettatura.
 - Conferme (`⏎` sì, `Esc` no, o dettale) solo per cancellazioni, spostamenti, archivio e nuove persone o progetti.
 - Voce: di sistema, "Luca (Premium)" da Accessibilità › Contenuti letti ad alta voce. Interruttore Muto nell'overlay.
 - Menu › "Apri la sessione in Terminale": stessa conversazione in `claude --resume` (non usarli insieme).
 - Impostazioni: hotkey, voce, colore orb (default viola), motore (Claude/Copilot), cartella di lavoro, path node/claude/copilot, API key opzionale (Keychain), avvio al login. Fuori dal vault (niente `00-Inbox/`) spariscono le voci del vault e i file trascinati finiscono nel campo come le cartelle.
-- Menu › Cruscotto MCP: stato e tool di ogni server MCP visto dal motore, riconnessione, aggiunta/rimozione dei server di Jarvis (`~/Library/Application Support/Jarvis/mcp.json`, usato da entrambi i motori), coda del log.
+- Menu › Cruscotto: panoramica (stato dell'agente, conversazione in corso, recenti, routine del vault), stato e tool di ogni server MCP visto dal motore, riconnessione, aggiunta/rimozione dei server di Jarvis (`~/Library/Application Support/Jarvis/mcp.json`, usato da entrambi i motori), coda del log.
 - Log: `~/Library/Logs/Jarvis/`. Sessione del giorno: `~/Library/Application Support/Jarvis/` (i vecchi modelli in `models/` si possono cancellare).
 - Struttura: `Jarvis/` app Swift, `orb/` pagina three.js dell'orb, `agent/` bridge Node (JSON lines: `agent.mjs` Claude, `copilot.mjs` Copilot, `common.mjs` condiviso), `Scripts/` install e release, `Tests/` test Swift Testing (`swift test --package-path Tests`, symlink ai file puri di `Jarvis/`).

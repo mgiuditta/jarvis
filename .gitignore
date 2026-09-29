@@ -6,3 +6,5 @@ xcuserdata/
 .superpowers/
 .swiftpm/
 Tests/.build/
+*.p12
+*.swp

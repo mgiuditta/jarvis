@@ -129,7 +129,14 @@ struct OverlayView: View {
             Text("JARVIS").font(.caption.monospaced().weight(.semibold)).tracking(3).foregroundStyle(accent)
             Text(stateLabel).font(.caption).foregroundStyle(.secondary)
                 .contentTransition(.opacity).animation(.easeOut(duration: 0.2), value: stateLabel)
+            if app.busy, let start = app.startedAt {
+                Text(timerInterval: start...Date.distantFuture, countsDown: false)
+                    .font(.caption.monospacedDigit()).foregroundStyle(.tertiary).fixedSize()
+            }
             Spacer()
+            if hasConversation && !app.busy {
+                iconButton("square.and.pencil", help: "Nuova sessione (/clear)") { app.newSession() }
+            }
             iconButton(muted ? "speaker.slash.fill" : "speaker.wave.2.fill", help: muted ? "Riattiva la voce" : "Muto") {
                 muted.toggle(); if muted { app.speaker.stop() }
             }
@@ -162,11 +169,9 @@ struct OverlayView: View {
         Button(action: action) {
             Image(systemName: symbol).font(.system(size: 11, weight: .semibold))
                 .frame(width: 26, height: 26)
-                .background(.white.opacity(0.08), in: Circle())
                 .contentShape(Circle())
         }
-        .buttonStyle(.plain)
-        .foregroundStyle(.secondary)
+        .buttonStyle(HUDIconStyle())
         .help(help)
         .accessibilityLabel(help)
     }
@@ -257,10 +262,39 @@ struct OverlayView: View {
     }
 
     private var statusBox: some View {
-        Label(app.status, systemImage: app.state == .error ? "exclamationmark.octagon.fill" : "info.circle")
-            .font(.caption)
-            .foregroundStyle(app.state == .error ? .red : .secondary)
-            .fixedSize(horizontal: false, vertical: true)
+        HStack(alignment: .firstTextBaseline) {
+            Label(app.status, systemImage: app.state == .error ? "exclamationmark.octagon.fill" : "info.circle")
+                .font(.caption)
+                .foregroundStyle(app.state == .error ? .red : .secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer()
+            if app.failedPrompt != nil && !app.busy {
+                Button("Riprova", systemImage: "arrow.clockwise") { app.retry() }
+                    .buttonStyle(.bordered).controlSize(.small)
+            }
+        }
+    }
+
+    /// Empty card: the last prompts one click away (not /ingest, whose files are already in the vault).
+    private var recentChips: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("RECENTI").font(.caption2.weight(.semibold)).tracking(1.5).foregroundStyle(.tertiary)
+            ForEach(recentPrompts) { r in
+                Button { app.ask(r.command, label: r.label) } label: {
+                    Label(r.label, systemImage: "arrow.uturn.backward")
+                        .font(.caption).lineLimit(1).truncationMode(.tail)
+                        .padding(.horizontal, 10).padding(.vertical, 7)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(RoundedRectangle(cornerRadius: 8))
+                }
+                .buttonStyle(ChipStyle(accent: accent))
+                .help(r.label)
+            }
+        }
+    }
+
+    private var recentPrompts: [RecentCommand] {
+        Array(app.recent.filter { !$0.command.hasPrefix("/ingest") }.prefix(3))
     }
 
     // MARK: input
@@ -269,7 +303,7 @@ struct OverlayView: View {
 
     private var autoSending: Bool {
         let t = app.draft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard autoSendDelay > 0, !t.isEmpty, !t.hasPrefix("/"), !t.hasPrefix("\"/") else { return false }  // a dropped folder path waits for ⏎
+        guard autoSendDelay > 0, !app.awaitsReturn, !t.isEmpty, !t.hasPrefix("/"), !t.hasPrefix("\"/") else { return false }  // a dropped folder path waits for ⏎
         // A lone word is usually a dictation cut short: it waits for more or ⏎. Jarvis's own words ("stop", "sì") still go.
         if case .agent = Intent.route(t), !t.contains(" ") { return false }
         return true
@@ -277,6 +311,9 @@ struct OverlayView: View {
 
     private var input: some View {
         VStack(alignment: .leading, spacing: 4) {
+            if app.draft.isEmpty && !hasConversation && app.confirmation == nil && !recentPrompts.isEmpty {
+                recentChips.padding(.bottom, 6)
+            }
             ForEach(suggestions, id: \.self) { c in
                 Button { pick(c) } label: {
                     HStack(alignment: .firstTextBaseline) {
@@ -353,7 +390,7 @@ struct OverlayView: View {
 
     private var placeholder: String {
         if app.confirmation != nil { return "Detta sì o no…" }
-        return app.history.isEmpty && app.transcript.isEmpty ? "Detta con Wispr… (/ per le skill)" : "Continua…"
+        return app.history.isEmpty && app.transcript.isEmpty ? (Prefs.dictation == "jarvis" ? "Parla, ti ascolto… (/ per le skill)" : "Detta con Wispr… (/ per le skill)") : "Continua…"
     }
 }
 
@@ -485,6 +522,49 @@ struct TypingDots: View {
         }
         .padding(.vertical, 6)
         .accessibilityLabel("Jarvis sta pensando")
+    }
+}
+
+/// Round header button: brightens on hover, dips on press.
+struct HUDIconStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View { Styled(configuration: configuration) }
+
+    private struct Styled: View {
+        let configuration: ButtonStyleConfiguration
+        @State private var hovering = false
+
+        var body: some View {
+            configuration.label
+                .foregroundStyle(hovering ? .primary : .secondary)
+                .background(.white.opacity(hovering ? 0.16 : 0.08), in: Circle())
+                .scaleEffect(configuration.isPressed ? 0.88 : 1)
+                .onHover { hovering = $0 }
+                .animation(.easeOut(duration: 0.15), value: hovering)
+                .animation(.spring(duration: 0.2), value: configuration.isPressed)
+        }
+    }
+}
+
+/// Tinted pill for the recent prompts, same hover/press feel as the header buttons.
+struct ChipStyle: ButtonStyle {
+    let accent: Color
+    func makeBody(configuration: Configuration) -> some View { Styled(configuration: configuration, accent: accent) }
+
+    private struct Styled: View {
+        let configuration: ButtonStyleConfiguration
+        let accent: Color
+        @State private var hovering = false
+
+        var body: some View {
+            configuration.label
+                .foregroundStyle(hovering ? .primary : .secondary)
+                .background(accent.opacity(hovering ? 0.24 : 0.12), in: RoundedRectangle(cornerRadius: 8))
+                .overlay { RoundedRectangle(cornerRadius: 8).strokeBorder(accent.opacity(hovering ? 0.5 : 0.2)) }
+                .scaleEffect(configuration.isPressed ? 0.98 : 1)
+                .onHover { hovering = $0 }
+                .animation(.easeOut(duration: 0.15), value: hovering)
+                .animation(.spring(duration: 0.2), value: configuration.isPressed)
+        }
     }
 }
 

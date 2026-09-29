@@ -27,6 +27,7 @@ struct RecentCommand: Identifiable, Codable {
     var history: [Turn] = []  // earlier exchanges of this session, oldest first
     var draft = ""          // what Wispr is typing into the input field
     var inputActive = false
+    private(set) var awaitsReturn = false  // text put in the field by another app (link, Services): never auto-sent
     var focusRequest = 0    // bumped to (re)focus the input field
     var answer = ""
     var tools: [ToolItem] = []
@@ -38,6 +39,8 @@ struct RecentCommand: Identifiable, Codable {
     var anchorLeft = false
     var screenHeight: CGFloat = 800  // visible height of the orb's screen, caps the conversation
     private(set) var busy = false
+    private(set) var startedAt: Date?          // current turn, for the header timer
+    private(set) var failedPrompt: RecentCommand?  // last prompt that ended in an error: "Riprova"
     var commands: [SlashCommand] = []   // for the "/" picker, from the agent
     var mcpServers: [McpServer] = []    // MCP dashboard, from the agent's mcp_status
     var mcpUpdated: Date?
@@ -45,15 +48,19 @@ struct RecentCommand: Identifiable, Codable {
 
     @ObservationIgnored let speaker = Speaker()
     @ObservationIgnored let agent = AgentClient()
+    @ObservationIgnored let dictation = Dictation()
+    @ObservationIgnored let notifier = Notifier()
     @ObservationIgnored var showOrb: ((Bool) -> Void)?
     @ObservationIgnored var activate: (() -> Void)?   // bring Jarvis forward so Wispr types into it
     @ObservationIgnored var openDashboard: (() -> Void)?  // set by MenuBarIcon, which lives in a scene
     @ObservationIgnored var openSettings: (() -> Void)?
+    @ObservationIgnored var openOnboarding: (() -> Void)?
     @ObservationIgnored private var lastAnswer = ""
     @ObservationIgnored private var previousApp: NSRunningApplication?
     @ObservationIgnored private var collapseTask: Task<Void, Never>?
     @ObservationIgnored private var errorTask: Task<Void, Never>?
     @ObservationIgnored private var restartTask: Task<Void, Never>?
+    @ObservationIgnored private var replyWaiters: [CheckedContinuation<String, any Error>] = []  // Shortcuts waiting for the answer
 
     init() {
         speaker.onStart = { [weak self] in
@@ -62,7 +69,8 @@ struct RecentCommand: Identifiable, Codable {
         }
         speaker.onIdle = { [weak self] in self?.speechEnded() }
         agent.onEvent = { [weak self] in self?.handle($0) }
-        agent.start()
+        notifier.onClick = { [weak self] in self?.listen() }
+        if Prefs.onboarded { agent.start() }  // first run: the onboarding starts it, instead of a "folder not found" error
     }
 
     // MARK: input
@@ -77,13 +85,25 @@ struct RecentCommand: Identifiable, Codable {
     }
 
     /// Shows the input field focused, remembering which app to give focus back to.
-    func listen() {
+    /// `prefill` goes in before the built-in dictation starts, so the dictation continues it.
+    /// `awaitsReturn`: the text came from outside Jarvis (a link any web page can open): only ⏎ sends it.
+    func listen(prefill: String = "", awaitsReturn: Bool = false) {
         speaker.stop()  // don't let Wispr hear Jarvis
-        draft = ""
+        draft = prefill
+        self.awaitsReturn = awaitsReturn
         inputActive = true
         state = restingState
         expand()
         focusInput()
+        startDictation()
+    }
+
+    /// Built-in dictation (no Wispr): the mic writes into the field; the auto-send in the overlay does the rest.
+    /// Off while Jarvis thinks or speaks, so it never hears itself.
+    private func startDictation() {
+        guard Prefs.dictation == "jarvis", inputActive else { return }
+        let base = draft  // e.g. a dropped folder path: the dictation continues it
+        dictation.start { [weak self] in self?.draft = base + $0 }
     }
 
     /// Makes Jarvis the key app and puts the cursor in the input field (after SwiftUI has built it).
@@ -96,8 +116,10 @@ struct RecentCommand: Identifiable, Codable {
     /// ⏎ or auto-send. The field stays open, so the next dictation continues the conversation.
     /// An empty ⏎ during a confirmation means "sì".
     func submit() {
+        dictation.stop()
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         draft = ""
+        awaitsReturn = false
         guard !text.isEmpty else { if confirmation != nil { answerConfirmation(true) }; return }
         heard(text)
     }
@@ -105,7 +127,7 @@ struct RecentCommand: Identifiable, Codable {
     /// Esc: "no" to a confirmation, else clears the field, else closes the conversation.
     func escape() {
         if confirmation != nil { draft = ""; return answerConfirmation(false) }
-        if !draft.isEmpty { draft = ""; return }
+        if !draft.isEmpty { draft = ""; awaitsReturn = false; return }
         close()
     }
 
@@ -113,7 +135,9 @@ struct RecentCommand: Identifiable, Codable {
     func close() {
         if confirmation != nil { answerConfirmation(false) }  // don't leave the agent waiting on a hidden question
         speaker.stop()
+        dictation.stop()
         draft = ""
+        awaitsReturn = false
         inputActive = false
         expanded = false
         state = restingState
@@ -147,6 +171,12 @@ struct RecentCommand: Identifiable, Codable {
             clipboard(ingest: ingest, question: question)
         case .agent(let command):
             ask(command, label: text)
+        case .screen(let question):
+            askAboutFrontApp(question, screenshot: true)
+        case .front(let question):
+            askAboutFrontApp(question, screenshot: false)
+        case .quick(let question):
+            quickAnswer(question, label: text)
         case .yes, .no:
             ask(text, label: text)  // no pending confirmation: just words for Claude
         }
@@ -154,19 +184,76 @@ struct RecentCommand: Identifiable, Codable {
 
     /// Sends a prompt to the agent. `label` is what the user said (shown in "recenti").
     func ask(_ command: String, label: String? = nil) {
-        speaker.stop()
-        if !transcript.isEmpty, !answer.isEmpty {
-            history.append(Turn(question: transcript, answer: answer))
-            history = Array(history.suffix(10))  // ponytail: last 10 on screen, the full session is in Claude Code
-        }
-        transcript = label ?? command
-        answer = ""; tools = []
+        beginTurn(label ?? command)
         busy = true
+        startedAt = .now
+        failedPrompt = nil
         state = .thinking
         expand()
         speaker.beginAnswer()
         remember(RecentCommand(label: label ?? command, command: command))
         agent.send(["type": "prompt", "id": UUID().uuidString, "text": command])
+    }
+
+    /// Shortcuts / Spotlight: same as `ask`, then waits for the end of the turn and returns the answer.
+    func reply(to prompt: String) async throws -> String {
+        guard !busy else { throw JarvisError(message: "Jarvis sta già rispondendo, riprova tra poco.") }  // the running turn's done would answer this one
+        // registered before ask(): a failed send emits its error synchronously
+        return try await withCheckedThrowingContinuation { replyWaiters.append($0); ask(prompt) }
+    }
+
+    private func endTurn(_ result: Result<String, any Error>) {
+        let waiters = replyWaiters
+        replyWaiters = []
+        for w in waiters { w.resume(with: result) }
+    }
+
+    /// Moves the current exchange into the history and starts showing a new one.
+    private func beginTurn(_ label: String) {
+        speaker.stop()
+        dictation.stop()
+        if !transcript.isEmpty, !answer.isEmpty {
+            history.append(Turn(question: transcript, answer: answer))
+            history = Array(history.suffix(10))  // ponytail: last 10 on screen, the full session is in Claude Code
+        }
+        transcript = label
+        answer = ""; tools = []
+    }
+
+    /// "domanda veloce": the on-device model answers; without Apple Intelligence the agent does.
+    private func quickAnswer(_ question: String, label: String) {
+        state = .thinking
+        Task {
+            guard let reply = await QuickAnswer.reply(question) else { return ask(question, label: label) }
+            beginTurn(label)
+            answer = reply
+            lastAnswer = reply
+            state = restingState
+            expand()
+            say(reply)
+        }
+    }
+
+    /// "cosa vedi" / "questa pagina": adds what the app Jarvis was called from shows (and a screenshot of it).
+    private func askAboutFrontApp(_ question: String, screenshot: Bool) {
+        guard let front = previousApp else {
+            return screenshot ? say("Chiamami dall'app che vuoi farmi vedere.") : ask(question)
+        }
+        FrontContext.requestAccessibility()
+        state = .thinking
+        Task {
+            let pid = front.processIdentifier
+            var context = await FrontContext.describe(pid: pid, name: front.localizedName ?? "sconosciuta")
+            if screenshot {
+                do { context += "\nScreenshot della finestra (leggilo): \(try await FrontContext.screenshot(pid: pid).path)" }
+                catch {
+                    Log.write("screenshot: \(error)")
+                    state = restingState
+                    return say("Non riesco a vedere lo schermo. Dai il permesso Registrazione schermo a Jarvis in Impostazioni di Sistema, poi riavvialo.")
+                }
+            }
+            ask("\(question)\n\nContesto, l'app da cui mi hai chiamato:\n\(context)", label: question)
+        }
     }
 
     func answerConfirmation(_ allow: Bool) {
@@ -187,8 +274,7 @@ struct RecentCommand: Identifiable, Codable {
         let isDir = { (u: URL) in !Prefs.isVault || (try? u.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true }
         let folders = files.filter(isDir)
         if !folders.isEmpty {
-            listen()
-            draft = folders.map { "\"\($0.path)\"" }.joined(separator: " ") + " "
+            listen(prefill: folders.map { "\"\($0.path)\"" }.joined(separator: " ") + " ")
         }
         let files = files.filter { !isDir($0) }
         guard !files.isEmpty else { return }
@@ -311,13 +397,20 @@ struct RecentCommand: Identifiable, Codable {
             lastAnswer = e.text ?? answer
             if let text = e.text, !text.isEmpty { answer = text }
             Log.write("jarvis: \(Speaker.spokenPart(of: lastAnswer))")
+            endTurn(.success(lastAnswer))
+            // In another app for a long turn: the voice alone may go unheard (muted, headphones off).
+            if !NSApp.isActive, let startedAt, Date.now.timeIntervalSince(startedAt) > 15 {
+                notifier.post(Speaker.spokenPart(of: lastAnswer))
+            }
             speaker.finishAnswer(fullText: lastAnswer)
             if !speaker.isSpeaking { state = restingState; scheduleCollapse() }
         case "error":
             busy = false
             confirmation = nil
             status = e.message ?? "Errore sconosciuto"
+            failedPrompt = recent.first  // ask() put the prompt that failed on top
             Log.write("errore: \(status)")
+            endTurn(.failure(JarvisError(message: status)))
             state = .error
             expand()
             errorTask?.cancel()
@@ -334,12 +427,14 @@ struct RecentCommand: Identifiable, Codable {
     private var restingState: OrbState { confirmation != nil ? .confirm : busy ? .thinking : inputActive ? .listening : .idle }
 
     private func say(_ text: String) {
+        dictation.stop()
         speaker.say(text)
     }
 
     private func speechEnded() {
         if state == .speaking || state == .idle || state == .listening { state = restingState }
         if !busy { scheduleCollapse() }
+        if !busy || confirmation != nil { startDictation() }  // the next turn, or the "sì / no"
     }
 
     func expand() {
@@ -372,6 +467,12 @@ struct RecentCommand: Identifiable, Codable {
         UserDefaults.standard.set(try? JSONEncoder().encode(recent), forKey: "recent")
     }
 
+    func retry() {
+        guard let p = failedPrompt else { return }
+        status = ""
+        ask(p.command, label: p.label)
+    }
+
     /// Stop button / "stop": silence and interrupt Claude mid-answer. The agent closes the turn with a done.
     func stopAnswer() {
         speaker.stop()
@@ -380,6 +481,7 @@ struct RecentCommand: Identifiable, Codable {
 
     func newSession() {
         agent.send(["type": "new_session"])  // the old turn gets no done/error: reset here
+        endTurn(.failure(CancellationError()))
         speaker.stop()
         busy = false; confirmation = nil
         answer = ""; tools = []; transcript = ""; history = []
@@ -393,9 +495,17 @@ struct RecentCommand: Identifiable, Codable {
     /// After mcp.json changed: the agent re-reads it and answers with a fresh mcp_status.
     func reloadMcp() { agent.send(["type": "mcp_reload"]) }
 
+    /// End of the onboarding. A new vault is built by the agent itself, interviewing the user.
+    func finishOnboarding(newVault: Bool) {
+        Prefs.onboarded = true
+        agent.start()  // right away, not restartAgent()'s delay: the prompt below goes to this process
+        if newVault { ask(Onboarding.vaultPrompt(engine: Prefs.backend), label: "Crea il mio vault") }
+    }
+
     func restartAgent() {
         agent.stop()
         // The old turn gets no done/error (stop() is deliberate): reset it here, like newSession().
+        endTurn(.failure(CancellationError()))
         speaker.stop()
         busy = false; confirmation = nil
         state = restingState
@@ -405,4 +515,10 @@ struct RecentCommand: Identifiable, Codable {
             agent.start()
         }
     }
+}
+
+/// Shown by Shortcuts when "Chiedi a Jarvis" fails.
+struct JarvisError: LocalizedError {
+    let message: String
+    var errorDescription: String? { message }
 }
