@@ -89,7 +89,7 @@ struct OverlayView: View {
                 card.transition(reduceMotion ? .opacity : .opacity.combined(with: .move(edge: .top)))
             }
         }
-        .padding(20)  // room for the card's shadow
+        .padding(20)  // off the screen edge
         .fixedSize()
         .onGeometryChange(for: CGSize.self) { $0.size } action: { onSize($0) }
         .animation(reduceMotion ? .easeOut(duration: 0.2) : .spring(duration: 0.35), value: app.expanded)
@@ -117,8 +117,6 @@ struct OverlayView: View {
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 18))
         .background(Color(red: 0.03, green: 0.01, blue: 0.06).opacity(0.78), in: RoundedRectangle(cornerRadius: 18))
         .overlay { RoundedRectangle(cornerRadius: 18).strokeBorder(accent.opacity(0.35)) }
-        .shadow(color: .black.opacity(0.45), radius: 14, y: 6)
-        .shadow(color: accent.opacity(0.2), radius: 20)
         .environment(\.colorScheme, .dark)  // HUD look, same in light mode
     }
 

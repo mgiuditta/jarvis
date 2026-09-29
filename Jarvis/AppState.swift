@@ -184,7 +184,9 @@ struct RecentCommand: Identifiable, Codable {
     }
 
     /// Sends a prompt to the agent. `label` is what the user said (shown in "recenti").
-    func ask(_ command: String, label: String? = nil) {
+    /// `showInput`: keep the field in the card for the follow-up (off for Shortcuts, which only want the answer).
+    func ask(_ command: String, label: String? = nil, showInput: Bool = true) {
+        if showInput { inputActive = true }  // a menu skill or "Riprova" opens the card without it: no way to reply
         beginTurn(label ?? command)
         busy = true
         startedAt = .now
@@ -200,7 +202,7 @@ struct RecentCommand: Identifiable, Codable {
     func reply(to prompt: String) async throws -> String {
         guard !busy else { throw JarvisError(message: "Jarvis sta già rispondendo, riprova tra poco.") }  // the running turn's done would answer this one
         // registered before ask(): a failed send emits its error synchronously
-        return try await withCheckedThrowingContinuation { replyWaiters.append($0); ask(prompt) }
+        return try await withCheckedThrowingContinuation { replyWaiters.append($0); ask(prompt, showInput: false) }
     }
 
     private func endTurn(_ result: Result<String, any Error>) {
