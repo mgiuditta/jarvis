@@ -62,12 +62,14 @@
         d = smin(d, length(q - vec3(cos(a), sin(a * 1.7) * .35, sin(a)) * (.72 + .15 * sin(uTime * 2. + float(i)))) - .3, .3); }
       return d; }
   `;
-  const BODIES = SHAPES.map((k) => `float sh_${k}(vec3 p){${window.ORB_SHAPES[k]}\n}`).join('\n');
-  const DISPATCH = `float shape(vec3 p){\n${SHAPES.map((k, i) => `  if (uShape == ${i + 1}) return sh_${k}(p);`).join('\n')}\n  return length(p) - 1.;\n}`;
+  // One program per shape (only its SDF inside): ~100 shapes in one shader would be a huge compile on WebKit.
+  // three.js caches programs, so each shape compiles once, while the orb is plain blob (k = 0).
+  const shapeSDF = (id) => `float shape(vec3 p){${id ? window.ORB_SHAPES[SHAPES[id - 1]] : 'return length(p) - 1.;'}\n}`;
+  let FRAG;
   const blobMat = new THREE.ShaderMaterial({
     uniforms,
     vertexShader: `varying vec3 vWorld; void main(){ vec4 w = modelMatrix * vec4(position, 1.); vWorld = w.xyz; gl_Position = projectionMatrix * viewMatrix * w; }`,
-    fragmentShader: NOISE + HELPERS + BODIES + DISPATCH + `
+    fragmentShader: FRAG = `
       uniform vec3 uMain, uLight, uDeep; uniform float uGlow, uScale; uniform mat3 uRot; uniform mat4 uVP; uniform int uEyes;
       varying vec3 vWorld;
       float map(vec3 p){
@@ -118,6 +120,12 @@
         #include <colorspace_fragment>
       }`,
   });
+  function useShape(id) {
+    uniforms.uShape.value = id;
+    blobMat.fragmentShader = NOISE + HELPERS + shapeSDF(id) + FRAG;
+    blobMat.needsUpdate = true;
+  }
+  useShape(0);
   const blob = new THREE.Mesh(new THREE.PlaneGeometry(6.6, 6.6), blobMat);
   scene.add(blob);
 
@@ -226,7 +234,7 @@
     orb.set({ state: 'thinking', variant: demo });
     if (!VARIANTS[demo]) wanted = { name: demo, shape: demo, mood: 'calm', hue: null };  // a bare shape id, not yet in variants.js
     shown = wanted; k = 1; shownAt = -9;
-    uniforms.uShape.value = shape(shown.shape);
+    useShape(shape(shown.shape));
     uniforms.uMood.value = Math.max(0, MOODS.indexOf(shown.mood));
     if (location.hash.includes('morph')) { let on = true; setInterval(() => orb.set({ variant: (on = !on) ? demo : 'blob' }), 4000); }
     // Background tabs pause rAF: keep drawing so gallery screenshots aren't frozen on the first frame.
@@ -242,7 +250,7 @@
       k = Math.max(0, k - dt * 2.5);
       if (k === 0) {
         shown = goal; shownAt = t;
-        uniforms.uShape.value = shape(shown.shape);
+        useShape(shape(shown.shape));
         uniforms.uMood.value = Math.max(0, MOODS.indexOf(shown.mood));
       }
     } else k = Math.min(1, k + dt * 1.4);

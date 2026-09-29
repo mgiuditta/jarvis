@@ -30,21 +30,23 @@ orb.js → morph blob → forma (passando sempre dal blob), tenuta minima 1,5 s
 
 ## Componenti
 
-### `orb/variants.json` — fonte unica del catalogo
-Array di `{ "name": "lente", "shape": "lens", "mood": "calm", "hue": null, "hint": "ricerca" }`.
+### `orb/variants.js` — fonte unica del catalogo
+`var ORB_VARIANTS = [ … ]` con righe JSON `{ "name": "lente", "shape": "lens", "mood": "calm", "hue": null, "hint": "ricerca" }`.
 - `name`: quello che scrive il modello (italiano, kebab-case, unico).
-- `shape`: id della funzione SDF in `orb.js` (più nomi possono condividere una forma, con mood/hue diversi).
-- `mood`: modificatore di animazione (`calm`, `spiky`, `jitter`, `shards`, `pulse`); default `calm`.
-- `hue`: colore opzionale che sostituisce il colore utente mentre la variante è attiva; `null` = colore utente.
-- `hint`: parola opzionale per il prompt quando il nome non basta.
+- `shape`: id della forma SDF (`orb/shapes*.js`; più nomi possono condividere una forma).
+- `mood`: modificatore di animazione (`calm`, `spiky`, `jitter`, `shards`, `pulse`).
+- `hue`: colore che sostituisce quello utente mentre la variante è attiva; `null` = colore utente.
+- `hint`: parole per il prompt quando il nome non basta.
 
 Letto da:
-- **Swift**: `OrbWebView` inietta il JSON con un `WKUserScript` a document-start (`window.ORB_VARIANTS = …`), perché `fetch` su `file://` in WKWebView non è affidabile.
-- **Sidecar**: `common.mjs` lo legge con `readFileSync` dal path passato da Swift in env `JARVIS_ORB_CATALOG`; se manca, niente istruzioni orb nel prompt e niente eventi orb (l'app funziona come oggi).
+- **orb.html** con un `<script>` (niente `fetch` su `file://`).
+- **Sidecar**: `agent/orb.mjs` legge `../orb/variants.js` relativo a sé (repo e bundle hanno `agent/` e `orb/` affiancati) e fa il parse del JSON dopo `= [`. Se manca, niente istruzioni orb e niente eventi: l'app funziona come prima.
+
+Le forme stanno in `orb/shapes.js` (base) e `orb/shapes-*.js` (batch), ognuna come corpo GLSL `{ id: \`…\` }`.
 
 ### `agent/common.mjs`
-- `style()` aggiunge, se il catalogo c'è: *"Prima della risposta e quando cambi fase scrivi ⟦orb:nome⟧ (invisibile all'utente). Nomi: lente, busta, …"* (solo nomi, con hint tra parentesi dove presente; ~300 token).
-- `stripOrbTags()`: filtro con stato per i delta in streaming. Trattiene il testo da `⟦` fino a `⟧` (o fino a 40 caratteri, poi lo rilascia così com'è: non era un tag). Nome sconosciuto → scartato in silenzio. Applicato anche al `text` finale di `done`.
+- `style()` aggiunge `orbPrompt()` (in `agent/orb.mjs`), se il catalogo c'è: *"Prima della risposta e quando cambi fase scrivi ⟦orb:nome⟧ (invisibile all'utente). Nomi: lente, busta, …"* (solo nomi, con hint tra parentesi dove presente; ~300 token).
+- `orbFilter()`: filtro con stato per i delta in streaming. Trattiene il testo da `⟦` fino a `⟧` (o fino a 40 caratteri, poi lo rilascia così com'è: non era un tag). Nome sconosciuto → scartato in silenzio. Applicato anche al `text` finale di `done`.
 - `TOOL_MAP`: nome tool (match per prefisso/regex, include `mcp__…`) → variante. Esempi: WebSearch/WebFetch → `lente`, Gmail → `busta`, Calendar → `calendario`, Edit/Write → `matita`, Bash → `terminale`, Read/Glob/Grep → `documento`, claude-in-chrome → `globo`, Task/Agent → `robot-retro`.
 - `agent.mjs` e `copilot.mjs` passano i delta dal filtro e chiamano il fallback su `tool_call`; nessun'altra logica duplicata.
 
@@ -52,7 +54,7 @@ Letto da:
 - `AgentEvent`: nuovo campo `variant: String?`.
 - `AppState`: `var orbVariant = "blob"`; `case "orb"` lo imposta; `done`, `error`, stop, `/clear` lo riportano a `"blob"`.
 - `OrbView`/`OrbWebView`: nuovo campo `variant`, aggiunto al JSON di `push()`.
-- Il bundle deve includere `variants.json` accanto a `orb.html` (verificare la build phase che copia `orb/`).
+- Il bundle copia già tutta `orb/` (build phase rsync): nessuna modifica al progetto Xcode.
 
 ### `orb/orb.js`
 - Il blob mesh diventa un quad a schermo intero con fragment shader raymarched (come il prototipo), stesso shading: fresnel, rim, sheen iridescente, spec.
@@ -63,7 +65,7 @@ Letto da:
 - Budget: ≤ 96 passi di marcia; la tela resta piccola (96–200 px), il costo GPU è trascurabile. Se una forma è troppo cara, si semplifica la sua SDF, non il marcher.
 
 ### `orb/gallery.html` (dev)
-Griglia di tutte le varianti del catalogo, ognuna in morph ciclico blob → forma. Serve per QA visiva e per aggiungere forme. Aperta con `python3 -m http.server` dentro `orb/`.
+Griglia di tutte le varianti del catalogo, ognuna in morph ciclico blob → forma. Serve per QA visiva e per aggiungere forme. Mostra la forma già formata (`#demo=nome`, `&morph` per il ciclo); `#shapes=a,b` per provare forme non ancora a catalogo.
 
 ## Catalogo iniziale (102)
 
