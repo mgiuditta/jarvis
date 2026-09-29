@@ -34,6 +34,7 @@ final class OrbWebView: WKWebView, WKNavigationDelegate {
     var state: OrbState = .idle
     var colorHex = "#9B5CFF"
     var hovering = false
+    var variant = "blob"
     private let levels: Levels
     private var timer: Timer?
     private var lastPush = ""
@@ -70,7 +71,8 @@ final class OrbWebView: WKWebView, WKNavigationDelegate {
     private func push() {
         guard window?.isVisible == true else { return }
         let v = state == .speaking ? levels.value : .zero
-        let js = "window.orb && orb.set({state:'\(state.rawValue)',level:\(v.x),low:\(v.y),high:\(v.w),hover:\(hovering),color:'\(colorHex)'})"
+        let name = variant.filter { $0.isLetter || $0.isNumber || $0 == "-" }  // goes into JS source
+        let js = "window.orb && orb.set({state:'\(state.rawValue)',level:\(v.x),low:\(v.y),high:\(v.w),hover:\(hovering),color:'\(colorHex)',variant:'\(name)'})"
         guard js != lastPush else { return }  // idle orb: nothing changes, nothing to send
         lastPush = js
         evaluateJavaScript(js)
@@ -92,6 +94,7 @@ struct OrbView: NSViewRepresentable {
     let colorHex: String
     let levels: Levels
     let hovering: Bool
+    var variant = "blob"
 
     func makeNSView(context: Context) -> OrbWebView { OrbWebView(levels: levels) }
 
@@ -99,5 +102,6 @@ struct OrbView: NSViewRepresentable {
         v.state = state
         v.colorHex = colorHex
         v.hovering = hovering
+        v.variant = variant
     }
 }

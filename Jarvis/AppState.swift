@@ -23,6 +23,7 @@ struct RecentCommand: Identifiable, Codable {
 /// Orchestrates dictated input (Wispr) ↔ agent ↔ voice/orb. Everything runs on the main actor.
 @MainActor @Observable final class AppState {
     var state: OrbState = .idle
+    var orbVariant = "blob"  // shape the orb takes while Jarvis works, picked by the agent (⟦orb:…⟧)
     var transcript = ""     // last message sent
     var history: [Turn] = []  // earlier exchanges of this session, oldest first
     var draft = ""          // what Wispr is typing into the input field
@@ -203,6 +204,7 @@ struct RecentCommand: Identifiable, Codable {
     }
 
     private func endTurn(_ result: Result<String, any Error>) {
+        orbVariant = "blob"
         let waiters = replyWaiters
         replyWaiters = []
         for w in waiters { w.resume(with: result) }
@@ -378,6 +380,8 @@ struct RecentCommand: Identifiable, Codable {
         case "mcp_status":
             mcpServers = (e.servers ?? []).sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
             mcpUpdated = .now
+        case "orb":
+            orbVariant = e.variant ?? "blob"
         case "tool_call":
             tools.append(ToolItem(icon: "wrench.and.screwdriver", text: "\(e.name ?? "tool") \(e.summary ?? "")"))
         case "file_changed":

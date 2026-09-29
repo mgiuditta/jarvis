@@ -73,7 +73,7 @@ struct OverlayView: View {
             if app.expanded && !app.anchorTop {
                 card.transition(reduceMotion ? .opacity : .opacity.combined(with: .move(edge: .bottom)))
             }
-            OrbView(state: app.state, colorHex: orbHex, levels: app.speaker.levels, hovering: hovering)
+            OrbView(state: app.state, colorHex: orbHex, levels: app.speaker.levels, hovering: hovering, variant: app.orbVariant)
                 .frame(width: orbSize, height: orbSize)
                 .opacity(orbResting ? 0.55 : 1)
                 .contentShape(Circle())

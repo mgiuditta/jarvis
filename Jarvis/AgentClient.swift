@@ -3,7 +3,7 @@ import Foundation
 /// One JSON line from agent/agent.mjs.
 struct AgentEvent: Decodable, Sendable {
     let type: String
-    var id, delta, name, summary, path, op, question, text, message, session_id: String?
+    var id, delta, name, summary, path, op, question, text, message, session_id, variant: String?
     var commands: [SlashCommand]?
     var servers: [McpServer]?
 }
