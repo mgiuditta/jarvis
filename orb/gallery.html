@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- QA for the orb variants: every entry of variants.js looping blob → shape. Open from disk (file://). -->
+<!-- QA for the orb variants: every entry of variants.js, formed. #shapes=a,b,c shows those shape ids instead. -->
 <html lang="it">
 <head>
 <meta charset="utf-8">
@@ -25,10 +25,12 @@
   // ponytail: 12 per page, browsers cap live WebGL contexts at ~16
   const PER = 12;
   let page = 0, px = 200;
-  const pages = Math.ceil(ORB_VARIANTS.length / PER);
+  const only = decodeURIComponent(location.hash.match(/shapes=([^&]+)/)?.[1] ?? '');
+  const LIST = only ? only.split(',').map((name) => ({ name })) : ORB_VARIANTS;
+  const pages = Math.ceil(LIST.length / PER);
   function render() {
     document.getElementById('page').textContent = `${page + 1} / ${pages}`;
-    document.getElementById('grid').innerHTML = ORB_VARIANTS.slice(page * PER, page * PER + PER).map((v) =>
+    document.getElementById('grid').innerHTML = LIST.slice(page * PER, page * PER + PER).map((v) =>
       `<figure><iframe width="${px}" height="${px}" src="orb.html#demo=${encodeURIComponent(v.name)}"></iframe><figcaption>${v.name}</figcaption></figure>`).join('');
   }
   document.getElementById('prev').onclick = () => { page = (page + pages - 1) % pages; render(); };

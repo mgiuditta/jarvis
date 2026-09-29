@@ -220,10 +220,11 @@
   const euler = new THREE.Euler(), m4 = new THREE.Matrix4();
   const shape = (name) => name === 'blob' ? 0 : shapeId(name);
 
-  // Gallery / QA: orb.html#demo=<name> shows that shape already formed (&morph = loop blob ↔ shape every 4 s).
+  // Gallery / QA: orb.html#demo=<variant or shape id> shows that shape already formed (&morph = loop blob ↔ shape every 4 s).
   const demo = decodeURIComponent(location.hash.match(/demo=([^&]+)/)?.[1] ?? '');
   if (demo) {
     orb.set({ state: 'thinking', variant: demo });
+    if (!VARIANTS[demo]) wanted = { name: demo, shape: demo, mood: 'calm', hue: null };  // a bare shape id, not yet in variants.js
     shown = wanted; k = 1; shownAt = -9;
     uniforms.uShape.value = shape(shown.shape);
     uniforms.uMood.value = Math.max(0, MOODS.indexOf(shown.mood));
