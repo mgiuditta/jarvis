@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<!-- QA for the orb variants: every entry of variants.js looping blob → shape. Open from disk (file://). -->
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<title>Orb gallery</title>
+<style>
+  body { margin: 0; padding: 16px; background: #15151c; color: #ccc; font: 13px system-ui; }
+  nav { display: flex; gap: 8px; align-items: center; margin-bottom: 16px; flex-wrap: wrap; }
+  button { background: #2a2a36; color: #eee; border: 0; border-radius: 6px; padding: 6px 10px; cursor: pointer; }
+  #grid { display: flex; flex-wrap: wrap; gap: 12px; }
+  figure { margin: 0; text-align: center; }
+  iframe { border: 0; background: transparent; display: block; }
+  figcaption { margin-top: 4px; font-family: ui-monospace, monospace; }
+</style>
+</head>
+<body>
+<nav>
+  <button id="prev">←</button><span id="page"></span><button id="next">→</button>
+  <button id="size">96 / 200 px</button>
+</nav>
+<div id="grid"></div>
+<script src="variants.js"></script>
+<script>
+  // ponytail: 12 per page, browsers cap live WebGL contexts at ~16
+  const PER = 12;
+  let page = 0, px = 200;
+  const pages = Math.ceil(ORB_VARIANTS.length / PER);
+  function render() {
+    document.getElementById('page').textContent = `${page + 1} / ${pages}`;
+    document.getElementById('grid').innerHTML = ORB_VARIANTS.slice(page * PER, page * PER + PER).map((v) =>
+      `<figure><iframe width="${px}" height="${px}" src="orb.html#demo=${encodeURIComponent(v.name)}"></iframe><figcaption>${v.name}</figcaption></figure>`).join('');
+  }
+  document.getElementById('prev').onclick = () => { page = (page + pages - 1) % pages; render(); };
+  document.getElementById('next').onclick = () => { page = (page + 1) % pages; render(); };
+  document.getElementById('size').onclick = () => { px = px === 200 ? 96 : 200; render(); };
+  render();
+</script>
+</body>
+</html>

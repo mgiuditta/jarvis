@@ -18,5 +18,5 @@ var ORB_VARIANTS = [
   {"name": "tavolozza", "shape": "palette", "mood": "calm", "hue": null, "hint": "design"},
   {"name": "robot-retro", "shape": "robot", "mood": "calm", "hue": null, "hint": "sub-agente, automazione"},
   {"name": "persona", "shape": "person", "mood": "calm", "hue": null, "hint": "contatti, meeting"},
-  {"name": "simbionte", "shape": "symbiote", "mood": "jitter", "hue": "#101018", "hint": "lavoro lungo e autonomo"}
+  {"name": "simbionte", "shape": "symbiote", "mood": "calm", "hue": "#101018", "hint": "lavoro lungo e autonomo"}
 ];

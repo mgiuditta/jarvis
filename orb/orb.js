@@ -1,5 +1,5 @@
-// Liquid blob orb (three.js). Driven from Swift: orb.set({ state, level, color }).
-// Noise-displaced sphere with recomputed normals, fresnel rim and a soft iridescent sheen, halo + dust.
+// Liquid blob orb (three.js). Driven from Swift: orb.set({ state, level, color, variant }).
+// Raymarched SDF blob that morphs into the shapes of shapes.js (variants.js picks them), fresnel rim, iridescent sheen, halo + dust.
 // Transparent canvas (no bloom pass): the glow comes from the rim and the halo, so the blob floats on the desktop.
 (() => {
   const { Color, Vector3 } = THREE;
@@ -33,51 +33,92 @@
       return 42.*dot(m*m,vec4(dot(p0,x0),dot(p1,x1),dot(p2,x2),dot(p3,x3)));
     }`;
 
-  // 1. The blob.
+  // 1. The blob: raymarched SDF on a camera-facing quad, so it can morph into any shape in shapes.js.
+  // Same look as the old displaced mesh (fresnel rim, iridescent sheen, veins); `blob` is shape 0.
+  const SHAPES = Object.keys(window.ORB_SHAPES ?? {});           // shape id = index + 1
+  const shapeId = (name) => SHAPES.indexOf(name) + 1;           // unknown → 0 = blob
   const uniforms = {
     uTime: { value: 0 }, uAmp: { value: 0.12 }, uFreq: { value: 0.9 }, uGlow: { value: 1 },
     uMain: { value: tint.main }, uLight: { value: tint.light }, uDeep: { value: tint.deep },
+    uRot: { value: new THREE.Matrix3() }, uScale: { value: 1.45 }, uVP: { value: new THREE.Matrix4() },
+    uShape: { value: 0 }, uMood: { value: 0 }, uK: { value: 0 }, uEyes: { value: shapeId('symbiote') },
   };
-  const blob = new THREE.Mesh(new THREE.IcosahedronGeometry(1.45, 48), new THREE.ShaderMaterial({
+  const HELPERS = `
+    uniform float uTime, uAmp, uFreq, uK; uniform int uShape, uMood;
+    mat2 rot(float a){ float c = cos(a), s = sin(a); return mat2(c, -s, s, c); }
+    float smin(float a, float b, float k){ float h = clamp(.5 + .5 * (b - a) / k, 0., 1.); return mix(b, a, h) - k * h * (1. - h); }
+    float box(vec3 p, vec3 b, float r){ vec3 q = abs(p) - b + r; return length(max(q, 0.)) + min(max(q.x, max(q.y, q.z)), 0.) - r; }
+    float cap(vec3 p, vec3 a, vec3 b, float r){ vec3 pa = p - a, ba = b - a; return length(pa - ba * clamp(dot(pa, ba) / dot(ba, ba), 0., 1.)) - r; }
+    float torus(vec3 p, float R, float r){ return length(vec2(length(p.xz) - R, p.y)) - r; }   // ring in the xz plane
+    float cyl(vec3 p, float r, float h){ vec2 d = abs(vec2(length(p.xz), p.y)) - vec2(r, h); return min(max(d.x, d.y), 0.) + length(max(d, 0.)); } // along y
+    float rcone(vec3 p, float r1, float r2, float h){ vec2 q = vec2(length(p.xz), p.y); float b = (r1 - r2) / h, a = sqrt(1. - b * b), k = dot(q, vec2(-b, a));
+      if (k < 0.) return length(q) - r1; if (k > a * h) return length(q - vec2(0., h)) - r2; return dot(q, vec2(a, b)) - r1; } // along y, from 0 to h
+    float ell(vec3 p, vec3 r){ float k0 = length(p / r), k1 = length(p / (r * r)); return k0 * (k0 - 1.) / k1; }
+    float field(vec3 p){ return snoise(p * uFreq + vec3(0., uTime * .35, 0.)) * .85 + snoise(p * uFreq * 1.9 - uTime * .4) * .15; }
+    float blob(vec3 p){ return length(p) - (1. + uAmp * field(p * 1.45)); }
+    float shards(vec3 p){
+      vec3 q = p; q.xz = rot(uTime * .6) * q.xz; float d = length(p) - .45;
+      for (int i = 0; i < 5; i++) { float a = float(i) * 1.2566 + uTime * .7;
+        d = smin(d, length(q - vec3(cos(a), sin(a * 1.7) * .35, sin(a)) * (.72 + .15 * sin(uTime * 2. + float(i)))) - .3, .3); }
+      return d; }
+  `;
+  const BODIES = SHAPES.map((k) => `float sh_${k}(vec3 p){${window.ORB_SHAPES[k]}\n}`).join('\n');
+  const DISPATCH = `float shape(vec3 p){\n${SHAPES.map((k, i) => `  if (uShape == ${i + 1}) return sh_${k}(p);`).join('\n')}\n  return length(p) - 1.;\n}`;
+  const blobMat = new THREE.ShaderMaterial({
     uniforms,
-    vertexShader: NOISE + `
-      uniform float uTime, uAmp, uFreq;
-      varying vec3 vN, vView; varying float vNoise;
-      float field(vec3 p){ return snoise(p*uFreq + vec3(0., uTime*.35, 0.)) * .85 + snoise(p*uFreq*1.9 - uTime*.4) * .15; }
-      vec3 displace(vec3 p){ return p * (1. + uAmp * field(p)); }
+    vertexShader: `varying vec3 vWorld; void main(){ vec4 w = modelMatrix * vec4(position, 1.); vWorld = w.xyz; gl_Position = projectionMatrix * viewMatrix * w; }`,
+    fragmentShader: NOISE + HELPERS + BODIES + DISPATCH + `
+      uniform vec3 uMain, uLight, uDeep; uniform float uGlow, uScale; uniform mat3 uRot; uniform mat4 uVP; uniform int uEyes;
+      varying vec3 vWorld;
+      float map(vec3 p){
+        float d;
+        if (uShape == 0) d = uMood == 3 ? mix(blob(p), shards(p), uK) : blob(p);
+        else if (uK > .999) d = shape(p);
+        else d = mix(blob(p), shape(p), uK);
+        if (uMood == 1) d -= uK * .22 * pow(max(snoise(p * 2.2 + uTime * .3), 0.), 2.);
+        else if (uMood == 2) d += uK * .035 * snoise(p * 2.8 + vec3(0., uTime * 4., 0.));
+        else if (uMood == 4) d += uK * .035 * sin(length(p) * 12. - uTime * 8.);
+        return d;
+      }
+      vec3 nor(vec3 p){ vec2 e = vec2(.004, -.004);
+        return normalize(e.xyy * map(p + e.xyy) + e.yyx * map(p + e.yyx) + e.yxy * map(p + e.yxy) + e.xxx * map(p + e.xxx)); }
       void main(){
-        vec3 n = normalize(normal);
-        vec3 t = normalize(abs(n.y) > .99 ? cross(n, vec3(1.,0.,0.)) : cross(n, vec3(0.,1.,0.)));
-        vec3 b = cross(n, t);
-        vec3 p = displace(position);
-        // Normals of the displaced surface from two nearby points: real shading instead of the sphere's.
-        vec3 dn = normalize(cross(displace(position + t*.01) - p, displace(position + b*.01) - p));
-        vNoise = field(position);
-        vN = normalize(normalMatrix * dn);
-        vec4 mv = modelViewMatrix * vec4(p, 1.);
-        vView = -mv.xyz;
-        gl_Position = projectionMatrix * mv;
-      }`,
-    fragmentShader: `
-      uniform vec3 uMain, uLight, uDeep; uniform float uTime, uGlow;
-      varying vec3 vN, vView; varying float vNoise;
-      void main(){
-        vec3 N = normalize(vN), V = normalize(vView);
+        // Ray in the blob's own space (rotated, scaled to unit size).
+        vec3 ro = transpose(uRot) * cameraPosition / uScale, rd = normalize(transpose(uRot) * (vWorld - cameraPosition));
+        float b = dot(ro, rd), c = dot(ro, ro) - 2.25, h = b * b - c;   // bounding ball r = 1.5
+        if (h < 0.) discard;
+        float t = max(-b - sqrt(h), 0.), tEnd = -b + sqrt(h);
+        bool hit = false;
+        // ponytail: 72 steps at 0.6 over a small canvas; if a heavy shape stutters, simplify that SDF, not the marcher
+        for (int i = 0; i < 72; i++) { float d = map(ro + rd * t); if (d < .002) { hit = true; break; } t += d * .6; if (t > tEnd) break; }
+        if (!hit) discard;
+        vec3 p = ro + rd * t, n = nor(p);
+        vec3 N = normalize(uRot * n), V = -normalize(vWorld - cameraPosition);
+        float noise = field(p * 1.45);
         float fres = pow(1. - max(dot(N, V), 0.), 2.2);
         vec3 L = normalize(vec3(-.5, .8, .7));
         float diff = max(dot(N, L), 0.);
         float spec = pow(max(dot(reflect(-L, N), V), 0.), 60.);
         float spec2 = pow(max(dot(reflect(-normalize(vec3(.7,-.4,.5)), N), V), 0.), 20.) * .25;
-        vec3 irid = .5 + .5 * cos(6.2831 * (vec3(0., .33, .67) + fres * .9 + vNoise * .25 + uTime * .03));
+        vec3 irid = .5 + .5 * cos(6.2831 * (vec3(0., .33, .67) + fres * .9 + noise * .25 + uTime * .03));
         vec3 col = mix(uDeep * .55, uMain, diff * .75 + .15);
-        col += uLight * smoothstep(.1, .9, vNoise) * .18;           // soft inner veins
-        col = mix(col, irid * uLight, fres * .35);                   // thin-film sheen at the edge
-        col += uLight * fres * 1.1 * uGlow;                          // rim light
+        col += uLight * smoothstep(.1, .9, noise) * .18;             // soft inner veins
+        col = mix(col, irid * uLight, fres * .35);                     // thin-film sheen at the edge
+        col += uLight * fres * 1.1 * uGlow;                            // rim light
         col += vec3(1.) * spec * .9 + uLight * spec2;
+        if (uShape == uEyes && uK > .5) {                              // symbiote: white slanted eyes on the head
+          vec3 q = p * 1.25;
+          float e = 1e9;
+          for (int s = -1; s <= 1; s += 2) { vec2 d = q.xy - vec2(float(s) * .15, 1.04); d = rot(float(s) * .5) * d; e = min(e, length(d / vec2(.14, .065)) - 1.); }
+          col = mix(col, vec3(1.), smoothstep(.15, -.15, e) * step(.25, q.z) * smoothstep(.5, 1., uK));
+        }
         gl_FragColor = vec4(col, 1.);
+        vec4 clip = uVP * vec4(uRot * p * uScale, 1.);
+        gl_FragDepth = clip.z / clip.w * .5 + .5;                      // true surface depth: dust passes in front and behind
         #include <colorspace_fragment>
       }`,
-  }));
+  });
+  const blob = new THREE.Mesh(new THREE.PlaneGeometry(6.6, 6.6), blobMat);
   scene.add(blob);
 
   // 2. Halo behind the blob: a camera-facing quad with a radial falloff.
@@ -135,15 +176,22 @@
   };
   // low/high = voice bands (bass → breathing size, highs → sharper ripples on the surface), hover = mouse over the orb.
   let low = 0, high = 0, lowS = 0, highS = 0, hover = false, hoverS = 0, ripple = 0;
-  let state = 'idle', level = 0, voice = 0, baseColor = '#9b5cff', shownColor = '';
+  let state = 'idle', level = 0, voice = 0, baseColor = '#9b5cff';
   const eased = { amp: 0.08, freq: 0.7, speed: 0.5, glow: 0.9 };
 
-  function applyColor(hex) {
-    if (hex === shownColor) return;
-    shownColor = hex;
-    tint.main.set(hex);
-    tint.light.set(hex).lerp(new Color('#ffffff'), 0.55);
-    tint.deep.set(hex).multiplyScalar(0.5);
+  // Variants (variants.js): the blob melts back to itself before taking the next shape, and holds each for 1.5 s.
+  const VARIANTS = Object.fromEntries((window.ORB_VARIANTS ?? []).map((v) => [v.name, v]));
+  const BLOB = VARIANTS.blob ?? { name: 'blob', shape: 'blob', mood: 'calm', hue: null };
+  const MOODS = ['calm', 'spiky', 'jitter', 'shards', 'pulse'];
+  let wanted = BLOB, shown = BLOB, shownAt = 0, k = 0, spin = 0;
+
+  const white = new Color('#ffffff'), cA = new Color(), cB = new Color();
+  function applyColor(hex, hue, amount) {
+    cA.set(hex);
+    if (hue) cA.lerp(cB.set(hue), amount);
+    tint.main.copy(cA);
+    tint.light.copy(cA).lerp(white, 0.55);
+    tint.deep.copy(cA).multiplyScalar(0.5);
   }
 
   function resize() {
@@ -165,13 +213,41 @@
       if (typeof o.high === 'number') high = Math.max(0, Math.min(1, o.high));
       if ('hover' in o) hover = !!o.hover;
       if (o.color) baseColor = o.color;
+      if ('variant' in o) wanted = VARIANTS[o.variant] ?? BLOB;
     },
   };
+
+  const euler = new THREE.Euler(), m4 = new THREE.Matrix4();
+  const shape = (name) => name === 'blob' ? 0 : shapeId(name);
+
+  // Gallery / QA: orb.html#demo=<name> shows that shape already formed (&morph = loop blob ↔ shape every 4 s).
+  const demo = decodeURIComponent(location.hash.match(/demo=([^&]+)/)?.[1] ?? '');
+  if (demo) {
+    orb.set({ state: 'thinking', variant: demo });
+    shown = wanted; k = 1; shownAt = -9;
+    uniforms.uShape.value = shape(shown.shape);
+    uniforms.uMood.value = Math.max(0, MOODS.indexOf(shown.mood));
+    if (location.hash.includes('morph')) { let on = true; setInterval(() => orb.set({ variant: (on = !on) ? demo : 'blob' }), 4000); }
+    // Background tabs pause rAF: keep drawing so gallery screenshots aren't frozen on the first frame.
+    if (document.hidden) window.requestAnimationFrame = (cb) => setTimeout(() => cb(performance.now()), 33);
+  }
 
   const clock = new THREE.Clock();
   renderer.setAnimationLoop(() => {
     const dt = Math.min(clock.getDelta(), 0.1), t = clock.elapsedTime, c = STATES[state];
-    applyColor(c.color ?? baseColor);
+    const urgent = state === 'confirm' || state === 'error';  // warnings stay recognisable: always the plain blob
+    const goal = urgent ? BLOB : wanted;
+    if (shown !== goal && (urgent || t - shownAt > 1.5)) {
+      k = Math.max(0, k - dt * 2.5);
+      if (k === 0) {
+        shown = goal; shownAt = t;
+        uniforms.uShape.value = shape(shown.shape);
+        uniforms.uMood.value = Math.max(0, MOODS.indexOf(shown.mood));
+      }
+    } else k = Math.min(1, k + dt * 1.4);
+    const ks = k * k * (3 - 2 * k);
+    uniforms.uK.value = ks;
+    applyColor(c.color ?? baseColor, c.color ? null : shown.hue, ks);
     for (const k in eased) eased[k] += (c[k] - eased[k]) * Math.min(1, dt * 3); // smooth state changes
     level += (c.pulse(t) + voice * 0.9 - level) * 0.25;
     uniforms.uTime.value += dt * eased.speed * (1 + level * 2);  // accumulate: speed changes don't jump
@@ -180,8 +256,12 @@
     uniforms.uAmp.value = eased.amp + level * 0.2 + highS * 0.12;
     uniforms.uFreq.value = eased.freq + highS * 0.6;
     uniforms.uGlow.value = eased.glow + level * 0.8 + hoverS * 0.4;
-    blob.rotation.y += dt * 0.15; blob.rotation.x = 0.2 + Math.sin(t * 0.3) * 0.1;
-    blob.scale.setScalar(1 + level * 0.12 + lowS * 0.1 + hoverS * 0.04);
+    // Blob spins; a shape sways around its front view (a flat envelope seen edge-on reads as nothing).
+    spin += dt * 0.15;
+    const front = uniforms.uShape.value !== 0;
+    euler.set(front ? 0.1 * Math.sin(t * 0.5) : 0.2 + Math.sin(t * 0.3) * 0.1, front ? 0.45 * Math.sin(t * 0.8) : spin, 0);
+    uniforms.uRot.value.setFromMatrix4(m4.makeRotationFromEuler(euler));
+    uniforms.uScale.value = 1.45 * (1 + level * 0.12 + lowS * 0.1 + hoverS * 0.04);
     haloMat.uniforms.strength.value = 0.35 + eased.glow * 0.25 + level * 0.4 + hoverS * 0.15;
     ripple += ((state === 'speaking' ? 1 : 0) - ripple) * Math.min(1, dt * 2);
     rings.forEach((r, i) => {
@@ -192,6 +272,7 @@
     });
     particles.rotation.y += dt * 0.05 * eased.speed; particles.rotation.x += dt * 0.02;
     pMat.uniforms.level.value = level;
+    uniforms.uVP.value.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
     renderer.render(scene, camera);
   });
 })();
