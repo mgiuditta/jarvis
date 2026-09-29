@@ -20,31 +20,41 @@ final class OverlayPanel: NSPanel {
         hidesOnDeactivate = false
         isMovableByWindowBackground = true
         contentView = NSHostingView(rootView: OverlayView(app: app) { [weak self] size in self?.fit(size) })
-        // Always start bottom-right of the menu-bar screen; dragging moves it only for the current session.
-        if let screen = NSScreen.screens.first?.visibleFrame {
-            setFrameOrigin(NSPoint(x: screen.maxX - frame.width - 4, y: screen.minY + 4))
-        }
+        // Starts in the saved zone of the menu-bar screen; a drag snaps it to the nearest of the 9 zones and remembers it.
+        if let v = NSScreen.screens.first?.visibleFrame { setFrameOrigin(app.zone.origin(for: frame.size, in: v)) }
+        app.placeOrb = { [weak self] zone in self?.place(zone) }
         NotificationCenter.default.addObserver(forName: NSWindow.didMoveNotification, object: self, queue: .main) { [weak self] _ in
-            MainActor.assumeIsolated { self?.updateAnchor() }
+            MainActor.assumeIsolated { self?.moved() }
         }
     }
 
-    /// The orb's corner follows the screen quadrant it was dragged to. Only while collapsed,
-    /// so the orb doesn't jump across the open card mid-drag.
-    private func updateAnchor() {
+    private var snapTask: Task<Void, Never>?
+
+    /// Snap once the drag is over (no button held for 0.25 s). Only while collapsed, so the orb
+    /// doesn't jump across the open card mid-drag.
+    private func moved() {
         guard let v = (screen ?? NSScreen.main)?.visibleFrame else { return }
         if app.screenHeight != v.height { app.screenHeight = v.height }  // the panel's own screen, not the key one
-        guard !app.expanded else { return }
-        let top = frame.midY > v.midY, left = frame.midX < v.midX
-        if app.anchorTop != top { app.anchorTop = top }
-        if app.anchorLeft != left { app.anchorLeft = left }
+        snapTask?.cancel()
+        snapTask = Task { [weak self] in
+            repeat { try? await Task.sleep(for: .milliseconds(250)) } while NSEvent.pressedMouseButtons != 0 && !Task.isCancelled
+            guard let self, !Task.isCancelled, !app.expanded else { return }
+            place(.nearest(to: NSPoint(x: frame.midX, y: frame.midY), in: v))
+        }
     }
 
-    /// Resize to the SwiftUI content keeping the orb's corner fixed, clamped on screen.
+    func place(_ zone: OrbZone) {
+        app.zone = zone
+        guard let v = (screen ?? NSScreen.main)?.visibleFrame else { return }
+        let o = zone.origin(for: frame.size, in: v)
+        if o != frame.origin { setFrame(NSRect(origin: o, size: frame.size), display: true, animate: true) }
+    }
+
+    /// Resize to the SwiftUI content keeping the orb's side fixed (its center, for the middle column), clamped on screen.
     private func fit(_ size: CGSize) {
         guard size.width > 0, size != frame.size else { return }
-        var r = NSRect(x: app.anchorLeft ? frame.minX : frame.maxX - size.width,
-                       y: app.anchorTop ? frame.maxY - size.height : frame.minY,
+        let x = [frame.minX, frame.midX - size.width / 2, frame.maxX - size.width][app.zone.col]
+        var r = NSRect(x: x, y: app.zone.cardBelow ? frame.maxY - size.height : frame.minY,
                        width: size.width, height: size.height)
         if let v = (screen ?? NSScreen.main)?.visibleFrame {
             r.origin.x = min(max(r.minX, v.minX), v.maxX - r.width)
@@ -69,8 +79,8 @@ struct OverlayView: View {
 
     var body: some View {
         // The card opens toward the screen center from the orb's corner.
-        VStack(alignment: app.anchorLeft ? .leading : .trailing, spacing: 10) {
-            if app.expanded && !app.anchorTop {
+        VStack(alignment: [.leading, .center, .trailing][app.zone.col], spacing: 10) {
+            if app.expanded && !app.zone.cardBelow {
                 card.transition(reduceMotion ? .opacity : .opacity.combined(with: .move(edge: .bottom)))
             }
             OrbView(state: app.state, colorHex: orbHex, levels: app.speaker.levels, hovering: hovering, variant: app.orbVariant)
@@ -85,7 +95,7 @@ struct OverlayView: View {
                 } isTargeted: { dropTargeted = $0 }
                 .contextMenu { MenuContent(app: app) }  // menu bar icon can hide behind the notch
                 .help("Jarvis:\(shortcutLabel(.talk)) e detta con Wispr, trascina qui un file per /ingest, clic destro per il menu")
-            if app.expanded && app.anchorTop {
+            if app.expanded && app.zone.cardBelow {
                 card.transition(reduceMotion ? .opacity : .opacity.combined(with: .move(edge: .top)))
             }
         }

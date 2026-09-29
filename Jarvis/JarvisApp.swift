@@ -164,8 +164,16 @@ struct MenuContent: View {
                 openObsidian(todayDaily)
             }
         }
+        if !skills.isEmpty {
+            Menu("Skill") {
+                ForEach(skills, id: \.self) { s in Button(s) { app.ask("/" + s) } }
+            }
+        }
         Button("Cruscotto…") { app.openDashboard?() }
         Button((app.orbShown ? "Nascondi orb" : "Mostra orb") + shortcutLabel(.toggleOrb)) { app.setOrb(!app.orbShown, remember: true) }
+        Picker("Posizione orb", selection: Binding(get: { app.zone }, set: { app.placeOrb?($0) })) {
+            ForEach(OrbZone.all, id: \.self) { Text($0.name).tag($0) }
+        }
         Button("Apri la sessione in Terminale") { Terminal.resumeSession() }
             .help("Stessa conversazione di Jarvis: non usarli tutti e due nello stesso momento")
         Button("Nuova sessione") { app.newSession() }
@@ -174,6 +182,14 @@ struct MenuContent: View {
         Button("Configurazione guidata…") { app.openOnboarding?() }
         Button("Impostazioni…") { app.openSettings?() }.keyboardShortcut(",")  // activates: an accessory app opens Settings behind
         Button("Esci") { NSApp.terminate(nil) }.keyboardShortcut("q")
+    }
+
+    /// The vault's own skills (.claude/skills/<name>/SKILL.md): read by both Claude and Copilot, unlike app.commands.
+    private var skills: [String] {
+        let dir = URL(fileURLWithPath: vaultPath.isEmpty ? Prefs.vaultPath : vaultPath).appending(path: ".claude/skills")
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: dir.path)) ?? []
+        return names.filter { FileManager.default.fileExists(atPath: dir.appending(path: "\($0)/SKILL.md").path) }
+            .sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
     }
 
     private var statusLine: String {

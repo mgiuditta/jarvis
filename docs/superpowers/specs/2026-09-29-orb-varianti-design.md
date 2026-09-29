@@ -2,15 +2,15 @@
 
 ## Obiettivo
 
-Mentre Jarvis lavora, l'orb si trasforma in uno di ~100 oggetti/personaggi predefiniti scelti dall'AI
+Mentre Jarvis lavora, l'orb si trasforma in uno di ~140 oggetti/personaggi predefiniti scelti dall'AI
 (lente per cercare, busta per la mail, simbionte nero per un lavoro lungo…) e torna blob a fine turno.
 Prototipo visivo: `docs/superpowers/specs/assets/orb-varianti-prototype.html`.
 
 ## Decisioni
 
-- **Chi sceglie:** il modello principale, con un tag nel testo `⟦orb:nome⟧` all'inizio della risposta e a ogni cambio di fase.
+- **Chi sceglie:** il modello principale, con un tag nel testo `⟦orb:nome⟧` all'inizio, prima di ogni strumento e prima della risposta finale (varianti diverse a ogni passo).
   Niente chiamate extra, funziona uguale su Claude Agent SDK e Copilot.
-- **Fallback deterministico:** a ogni `tool_call` noto, se il modello non ha emesso un tag negli ultimi 2 s, la variante arriva da una mappa fissa tool → variante.
+- **Fallback deterministico:** a ogni `tool_call` noto, se il modello non ha emesso un tag negli ultimi 0,8 s, la variante arriva da una mappa fissa tool → variante.
 - **Rendering:** solo il blob passa da mesh displaced a quad raymarched SDF. Alone, polvere, anelli voce, colori e stati restano come oggi.
   La variante `blob` riproduce il look attuale: a riposo l'orb non cambia.
 - **Personaggi:** omaggi riconoscibili, non copie di IP (niente Pikachu/Mario/Venom esatti): l'app è distribuita firmata.
@@ -25,7 +25,8 @@ common.mjs: stripOrbTags (streaming) → partial_text senza tag + {type:'orb', v
           + tool_call senza tag recente → {type:'orb', variant: TOOL_MAP[name]}
 AppState.handle("orb") → orbVariant (reset a "blob" su done/error/stop/clear)
 OrbWebView.push() → orb.set({..., variant})
-orb.js → morph blob → forma (passando sempre dal blob), tenuta minima 1,5 s
+orb.js → coda (max 3, `blob` la svuota) → morph blob → forma (passando sempre dal blob), tenuta minima 1,2 s
+fine turno ok → `spunta` per ~2 s, poi `blob`
 ```
 
 ## Componenti
@@ -85,6 +86,19 @@ Griglia di tutte le varianti del catalogo, ognuna in morph ciclico blob → form
 **Personaggi (30, omaggi):** persona, simbionte (nero lucido, occhi bianchi, tentacoli), idraulico-baffi, fantasmino-arcade, mangia-pallini, invasore-pixel, astronauta-fagiolo, robot-retro, supereroe-mantello, cavaliere, ninja, mago, zombie, pirata, vampiro, alieno, scheletro, detective, cowboy, gatto, cane, gufo, drago, dinosauro, polpo, pinguino, unicorno, slime, fungo-bonus, blocco-bonus.
 
 Criterio per ogni forma: la sagoma deve leggersi a 96 px. Se non si legge, la si semplifica o si toglie dal catalogo.
+
+**Sviluppo e design (36, omaggi, non loghi esatti):**
+- Loghi dev: gatto-polpo (GitHub), volpe-tanuki (GitLab), balena-container (Docker), atomo (React), rondine (Swift), serpenti (Python), timone (Kubernetes), gopher (Go), elefante (Postgres), scudo-a (Angular), cubo-pacchetti (npm)
+- Oggetti dev: database, server, chip, spina-api, pull-request, provetta, semaforo, pergamena, refresh, cancelletto
+- Design: pillole-figma, diamante (Sketch), pennino-bezier, righello, squadra, livelli, griglia, contagocce, secchiello, nodi-vettore, cursore, finestra-browser, mockup-telefono, font-aa, componente
+
+Forme in `orb/shapes-dev-1.js`, `orb/shapes-dev-2.js`, `orb/shapes-design.js`. `orb.html#demo=blob&seq=a,b,c` prova la coda.
+
+## Posizione dell'orb
+
+Griglia 3×3 dello schermo (`OrbZone` in `Support.swift`): angoli, centri dei bordi, centro. Al rilascio del trascinamento
+l'orb scatta alla zona del terzo di schermo in cui cade; la zona è salvata in `Prefs.orbZone` (default in basso a destra).
+Menu contestuale → "Posizione orb". La card si apre sotto l'orb, tranne sulla riga in basso; nella colonna centrale resta centrata.
 
 ## Consegna a fasi
 

@@ -28,6 +28,35 @@ enum Log {
     }
 }
 
+/// Where the orb sits: a 3×3 grid of the screen (corners, edge midpoints, center).
+struct OrbZone: Equatable, Hashable {
+    var col: Int  // 0 left, 1 center, 2 right
+    var row: Int  // 0 bottom, 1 middle, 2 top
+    static let bottomRight = OrbZone(col: 2, row: 0)
+    static let all = [2, 1, 0].flatMap { r in (0..<3).map { OrbZone(col: $0, row: r) } }  // top row first, like the screen
+
+    var index: Int { row * 3 + col }
+    init(col: Int, row: Int) { self.col = min(2, max(0, col)); self.row = min(2, max(0, row)) }
+    init?(index: Int) { guard (0..<9).contains(index) else { return nil }; self.init(col: index % 3, row: index / 3) }
+
+    /// The card opens toward the screen center: below the orb unless the orb is on the bottom row.
+    var cardBelow: Bool { row > 0 }
+    var name: String {
+        [["In basso a sinistra", "In basso al centro", "In basso a destra"],
+         ["Al centro a sinistra", "Al centro", "Al centro a destra"],
+         ["In alto a sinistra", "In alto al centro", "In alto a destra"]][row][col]
+    }
+
+    /// The zone of the screen third a point falls in.
+    static func nearest(to p: CGPoint, in v: CGRect) -> OrbZone {
+        OrbZone(col: Int((p.x - v.minX) / v.width * 3), row: Int((p.y - v.minY) / v.height * 3))
+    }
+    /// Origin of a window of `size` sitting in this zone of `v` (edge-aligned, or centered on the middle).
+    func origin(for size: CGSize, in v: CGRect) -> CGPoint {
+        CGPoint(x: v.minX + (v.width - size.width) * CGFloat(col) / 2, y: v.minY + (v.height - size.height) * CGFloat(row) / 2)
+    }
+}
+
 /// User settings (UserDefaults keys shared with @AppStorage in SettingsView).
 enum Prefs {
     private static var d: UserDefaults { .standard }
@@ -49,6 +78,10 @@ enum Prefs {
     static var speechRate: Double { d.object(forKey: "speechRate") as? Double ?? 0.5 }
     static var orbVisible: Bool { d.object(forKey: "orbVisible") as? Bool ?? true }
     static var orbOnlyWhenActive: Bool { d.bool(forKey: "orbOnlyWhenActive") }
+    static var orbZone: OrbZone {
+        get { d.object(forKey: "orbZone").flatMap { OrbZone(index: $0 as? Int ?? -1) } ?? .bottomRight }
+        set { d.set(newValue.index, forKey: "orbZone") }
+    }
     /// "wispr" (Wispr Flow types into the field) | "jarvis" (built-in Dictation).
     static var dictation: String { d.string(forKey: "dictation").nonEmpty ?? "wispr" }
     /// First-run setup done. Whoever already chose a folder before onboarding existed counts as done.

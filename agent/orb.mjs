@@ -7,7 +7,7 @@ export function loadCatalog(file = new URL('../orb/variants.js', import.meta.url
 export const CATALOG = loadCatalog();
 
 export const orbPrompt = (cat = CATALOG) => cat.length ? `
-Un orb animato mostra cosa stai facendo: prima della risposta e ogni volta che cambi fase scrivi ⟦orb:nome⟧ (invisibile, non viene letto), col nome più adatto tra: ${cat.map((v) => v.hint ? `${v.name} (${v.hint})` : v.name).join(', ')}.` : '';
+Un orb animato mostra cosa stai facendo: scrivi ⟦orb:nome⟧ (invisibile, non viene letto) a ogni passo: all'inizio, prima di ogni strumento e prima della risposta finale, scegliendo ogni volta il nome più adatto a quel passo (cambialo, non ripetere sempre lo stesso) tra: ${cat.map((v) => v.hint ? `${v.name} (${v.hint})` : v.name).join(', ')}.` : '';
 
 // Used when the model didn't tag: the tool it runs says what it's doing.
 const TOOLS = [
@@ -15,7 +15,14 @@ const TOOLS = [
   [/gmail|mail/i, 'busta'],
   [/calendar/i, 'calendario'],
   [/chrome|browser|playwright/i, 'globo'],
-  [/figma/i, 'tavolozza'],
+  [/figma/i, 'pillole-figma'],
+  [/github/i, 'gatto-polpo'],
+  [/gitlab/i, 'volpe-tanuki'],
+  [/docker/i, 'balena-container'],
+  [/kube|k8s|helm/i, 'timone'],
+  [/postgres|sql|database|supabase/i, 'database'],
+  [/slack/i, 'cancelletto'],
+  [/(^|_)test/i, 'provetta'],
   [/drive/i, 'cartella'],
   [/^(edit|write|multiedit|notebookedit|create|str_replace)/i, 'matita'],
   [/^(bash|shell|powershell)/i, 'terminale'],
@@ -40,7 +47,7 @@ export function orbFilter(emit, names = new Set(CATALOG.map((v) => v.name)), now
     },
     tool(name) {
       const v = toolVariant(name);
-      if (v && names.has(v) && now() - lastTag > 2000) emit(v);
+      if (v && names.has(v) && now() - lastTag > 800) emit(v);
     },
     reset() { held = ''; lastTag = -Infinity; },
   };

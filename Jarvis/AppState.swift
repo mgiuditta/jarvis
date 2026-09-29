@@ -36,8 +36,7 @@ struct RecentCommand: Identifiable, Codable {
     var status = ""
     var expanded = false
     var orbShown = false
-    var anchorTop = false   // which screen corner the orb sits in: the card opens toward the center
-    var anchorLeft = false
+    var zone = Prefs.orbZone { didSet { Prefs.orbZone = zone } }  // where the orb sits: the card opens toward the center
     var screenHeight: CGFloat = 800  // visible height of the orb's screen, caps the conversation
     private(set) var busy = false
     private(set) var startedAt: Date?          // current turn, for the header timer
@@ -54,6 +53,7 @@ struct RecentCommand: Identifiable, Codable {
     @ObservationIgnored var showOrb: ((Bool) -> Void)?
     @ObservationIgnored var activate: (() -> Void)?   // bring Jarvis forward so Wispr types into it
     @ObservationIgnored var openDashboard: (() -> Void)?  // set by MenuBarIcon, which lives in a scene
+    @ObservationIgnored var placeOrb: ((OrbZone) -> Void)?  // set by OverlayPanel
     @ObservationIgnored var openSettings: (() -> Void)?
     @ObservationIgnored var openOnboarding: (() -> Void)?
     @ObservationIgnored private var lastAnswer = ""
@@ -206,7 +206,14 @@ struct RecentCommand: Identifiable, Codable {
     }
 
     private func endTurn(_ result: Result<String, any Error>) {
-        orbVariant = "blob"
+        // Done: a checkmark for a moment, then back to the blob (orb.js holds it ≥ 1.2 s after what's still queued).
+        if case .success = result {
+            orbVariant = "spunta"
+            Task {
+                try? await Task.sleep(for: .seconds(2))
+                if !busy && orbVariant == "spunta" { orbVariant = "blob" }
+            }
+        } else { orbVariant = "blob" }
         let waiters = replyWaiters
         replyWaiters = []
         for w in waiters { w.resume(with: result) }
@@ -505,7 +512,9 @@ struct RecentCommand: Identifiable, Codable {
     func finishOnboarding(newVault: Bool) {
         Prefs.onboarded = true
         agent.start()  // right away, not restartAgent()'s delay: the prompt below goes to this process
-        if newVault { ask(Onboarding.vaultPrompt(engine: Prefs.backend), label: "Crea il mio vault") }
+        guard newVault else { return }
+        listen()  // the interview needs answers: keep the field open (ask() alone never shows it)
+        ask(Onboarding.vaultPrompt(engine: Prefs.backend), label: "Crea il mio vault")
     }
 
     func restartAgent() {

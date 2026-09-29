@@ -187,11 +187,17 @@
   let state = 'idle', level = 0, voice = 0, baseColor = '#9b5cff';
   const eased = { amp: 0.08, freq: 0.7, speed: 0.5, glow: 0.9 };
 
-  // Variants (variants.js): the blob melts back to itself before taking the next shape, and holds each for 1.5 s.
+  // Variants (variants.js): the blob melts back to itself before taking the next shape, and holds each for 1.2 s.
+  // Queued, so a quick lente → terminale → matita shows all three; `blob` (end of turn) drops what's still waiting.
   const VARIANTS = Object.fromEntries((window.ORB_VARIANTS ?? []).map((v) => [v.name, v]));
   const BLOB = VARIANTS.blob ?? { name: 'blob', shape: 'blob', mood: 'calm', hue: null };
   const MOODS = ['calm', 'spiky', 'jitter', 'shards', 'pulse'];
-  let wanted = BLOB, shown = BLOB, shownAt = 0, k = 0, spin = 0;
+  let queue = [], last = 'blob', shown = BLOB, shownAt = 0, k = 0, spin = 0;
+  function want(v) {
+    if (v === BLOB) queue = [];
+    queue.push(v);
+    if (queue.length > 3) queue.shift();  // ponytail: cap 3, the orb never lags more than ~4 s behind the work
+  }
 
   const white = new Color('#ffffff'), cA = new Color(), cB = new Color();
   function applyColor(hex, hue, amount) {
@@ -221,7 +227,7 @@
       if (typeof o.high === 'number') high = Math.max(0, Math.min(1, o.high));
       if ('hover' in o) hover = !!o.hover;
       if (o.color) baseColor = o.color;
-      if ('variant' in o) wanted = VARIANTS[o.variant] ?? BLOB;
+      if ('variant' in o && o.variant !== last) { last = o.variant; want(VARIANTS[o.variant] ?? BLOB); }  // every push repeats it
     },
   };
 
@@ -232,11 +238,14 @@
   const demo = decodeURIComponent(location.hash.match(/demo=([^&]+)/)?.[1] ?? '');
   if (demo) {
     orb.set({ state: 'thinking', variant: demo });
-    if (!VARIANTS[demo]) wanted = { name: demo, shape: demo, mood: 'calm', hue: null };  // a bare shape id, not yet in variants.js
-    shown = wanted; k = 1; shownAt = -9;
+    shown = VARIANTS[demo] ?? { name: demo, shape: demo, mood: 'calm', hue: null };  // a bare shape id, not yet in variants.js
+    queue = []; k = 1; shownAt = -9;
     useShape(shape(shown.shape));
     uniforms.uMood.value = Math.max(0, MOODS.indexOf(shown.mood));
     if (location.hash.includes('morph')) { let on = true; setInterval(() => orb.set({ variant: (on = !on) ? demo : 'blob' }), 4000); }
+    // #demo=blob&seq=a,b,c: those variants arrive 0.3 s apart every 8 s, to check the queue shows each one.
+    const seq = decodeURIComponent(location.hash.match(/seq=([^&]+)/)?.[1] ?? '').split(',').filter(Boolean);
+    if (seq.length) setInterval(() => { orb.set({ variant: 'blob' }); seq.forEach((v, i) => setTimeout(() => orb.set({ variant: v }), 300 * (i + 1))); }, 8000);
     // Background tabs pause rAF: keep drawing so gallery screenshots aren't frozen on the first frame.
     if (document.hidden) window.requestAnimationFrame = (cb) => setTimeout(() => cb(performance.now()), 33);
   }
@@ -245,10 +254,12 @@
   renderer.setAnimationLoop(() => {
     const dt = Math.min(clock.getDelta(), 0.1), t = clock.elapsedTime, c = STATES[state];
     const urgent = state === 'confirm' || state === 'error';  // warnings stay recognisable: always the plain blob
-    const goal = urgent ? BLOB : wanted;
-    if (shown !== goal && (urgent || t - shownAt > 1.5)) {
+    while (queue[0] === shown) queue.shift();
+    const goal = urgent ? BLOB : queue[0] ?? shown;
+    if (shown !== goal && (urgent || t - shownAt > 1.2)) {
       k = Math.max(0, k - dt * 2.5);
       if (k === 0) {
+        if (goal === queue[0]) queue.shift();
         shown = goal; shownAt = t;
         useShape(shape(shown.shape));
         uniforms.uMood.value = Math.max(0, MOODS.indexOf(shown.mood));

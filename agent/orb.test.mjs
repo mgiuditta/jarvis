@@ -30,11 +30,11 @@ test('unclosed bracket released after 40 chars', () => {
 test('plain text untouched', () => {
   assert.equal(make().f.text('niente tag qui'), 'niente tag qui');
 });
-test('tool fallback respects 2s after a tag', () => {
+test('tool fallback respects 0.8s after a tag', () => {
   const { f, out, tick } = make();
   f.text('⟦orb:lente⟧');
   f.tool('Bash'); assert.deepEqual(out, ['lente']);
-  tick(2500); f.tool('Bash'); assert.deepEqual(out, ['lente', 'terminale']);
+  tick(900); f.tool('Bash'); assert.deepEqual(out, ['lente', 'terminale']);
   f.tool('SconosciutoTool'); assert.deepEqual(out, ['lente', 'terminale']);
 });
 test('reset drops a half tag', () => {
@@ -48,6 +48,8 @@ test('toolVariant', () => {
   assert.equal(toolVariant('mcp__claude_ai_Gmail__search_threads'), 'busta');
   assert.equal(toolVariant('bash'), 'terminale');
   assert.equal(toolVariant('edit'), 'matita');
+  assert.equal(toolVariant('mcp__github__create_pull_request'), 'gatto-polpo');
+  assert.equal(toolVariant('mcp__plugin_figma_figma__get_screenshot'), 'pillole-figma');
   assert.equal(toolVariant('Nope'), null);
 });
 test('real catalog parses, names unique, tool map targets exist', () => {
@@ -55,7 +57,8 @@ test('real catalog parses, names unique, tool map targets exist', () => {
   assert.ok(cat.length > 10);
   const n = cat.map((v) => v.name);
   assert.equal(new Set(n).size, n.length);
-  for (const v of ['lente', 'busta', 'calendario', 'globo', 'matita', 'terminale', 'documento', 'robot-retro', 'cartella', 'tavolozza'])
+  for (const v of ['lente', 'busta', 'calendario', 'globo', 'matita', 'terminale', 'documento', 'robot-retro', 'cartella', 'pillole-figma', 'gatto-polpo',
+    'volpe-tanuki', 'balena-container', 'timone', 'database', 'cancelletto', 'provetta', 'spunta'])
     assert.ok(n.includes(v), v);
   assert.match(orbPrompt(cat), /⟦orb:nome⟧/);
   assert.equal(orbPrompt([]), '');
