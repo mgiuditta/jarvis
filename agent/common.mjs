@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { createInterface } from 'node:readline';
+import { orbPrompt } from './orb.mjs';
 
 export const VAULT = process.env.JARVIS_VAULT ?? process.cwd();
 export const STATE = process.env.JARVIS_STATE ?? path.join(os.homedir(), 'Library/Application Support/Jarvis/session.json');
@@ -31,7 +32,7 @@ Ogni domanda è un giro a voce, quindi falle tutte insieme: se una skill (es. wa
 A voce di' solo quante sono (es. "Ho quattro domande, le trovi a schermo"); dopo la riga vuota mettile numerate, ognuna con la tua risposta consigliata.
 L'utente può rispondere a tutte in un colpo (es. "uno sì, tre la B"); "ok" o "vai" significa accettare le risposte consigliate rimaste. Non chiedere quello che puoi scoprire da solo.${isVault() ? `
 Lavori nel secondo cervello dell'utente. Il piano di oggi è in 00-Inbox/daily/${today()}.md: leggilo quando serve contesto sulla giornata.
-Per le richieste ricorrenti usa le skill del vault (es. prep-day, close-day, ingest, decision, pull-tickets, pull-mrs, pull-teams, weekly).` : ''}`;
+Per le richieste ricorrenti usa le skill del vault (es. prep-day, close-day, ingest, decision, pull-tickets, pull-mrs, pull-teams, weekly).` : ''}${orbPrompt()}`;
 
 // Voice confirmations: need_confirmation out, confirm{id,allow} in.
 const pending = new Map(); // confirmation id -> resolve(bool)

@@ -1,11 +1,12 @@
 // Jarvis agent bridge: Claude Agent SDK <-> JSON lines on stdin/stdout.
 // in:  prompt{id,text} | confirm{id,allow} | interrupt | new_session | mcp_status | mcp_reconnect{name} | mcp_reload
-// out: ready | commands | partial_text | tool_call | file_changed | need_confirmation | done | error | mcp_status
+// out: ready | commands | partial_text | tool_call | orb | file_changed | need_confirmation | done | error | mcp_status
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { confirmQuestion, sessionPaths } from './policy.mjs';
+import { orbFilter, stripTags } from './orb.mjs';
 import { VAULT, send, today, readState, writeState, summary, style, loadMcp, ask, cancelPending, onMessages } from './common.mjs';
 
 const CONFIG = process.env.CLAUDE_CONFIG_DIR ?? path.join(os.homedir(), '.claude');
@@ -30,6 +31,7 @@ function channel() {
 }
 
 let q, input, day, turnId = null, stopped = false;
+const orb = orbFilter((variant) => send({ type: 'orb', id: turnId, variant }));
 
 function start(fresh = false) {
   const saved = readState();
@@ -90,14 +92,17 @@ function handle(m) {
     sendCommands(m.commands);
   } else if (m.type === 'stream_event' && !m.parent_tool_use_id) {
     const e = m.event;
-    if (e.type === 'content_block_delta' && e.delta?.type === 'text_delta') send({ type: 'partial_text', id: turnId, delta: e.delta.text });
+    if (e.type === 'content_block_delta' && e.delta?.type === 'text_delta') {
+      const delta = orb.text(e.delta.text);
+      if (delta) send({ type: 'partial_text', id: turnId, delta });
+    }
   } else if (m.type === 'assistant') {
     for (const b of m.message.content ?? [])
-      if (b.type === 'tool_use') send({ type: 'tool_call', id: turnId, name: b.name, summary: summary(b.input) });
+      if (b.type === 'tool_use') orb.tool(b.name), send({ type: 'tool_call', id: turnId, name: b.name, summary: summary(b.input) });
   } else if (m.type === 'result') {
     cancelPending();
     if (stopped) { stopped = false; send({ type: 'done', id: turnId, text: '', session_id: m.session_id }); } // user hit stop: not an error
-    else if (m.subtype === 'success') send({ type: 'done', id: turnId, text: m.result ?? '', session_id: m.session_id });
+    else if (m.subtype === 'success') send({ type: 'done', id: turnId, text: stripTags(m.result ?? ''), session_id: m.session_id });
     else send({ type: 'error', id: turnId, message: (m.errors ?? [m.subtype]).join('; ') });
   }
 }
@@ -117,7 +122,7 @@ async function mcpStatus() {
 onMessages(async (msg) => {
   if (msg.type === 'prompt') {
     if (day !== today()) restart(); // daily session
-    turnId = msg.id; stopped = false;
+    turnId = msg.id; stopped = false; orb.reset();
     input.push({ type: 'user', message: { role: 'user', content: msg.text }, parent_tool_use_id: null, origin: { kind: 'human' } });
   } else if (msg.type === 'interrupt') {
     stopped = true; cancelPending(); q.interrupt().catch(() => {});

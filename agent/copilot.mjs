@@ -2,6 +2,7 @@
 // Uses the user's Copilot CLI (JARVIS_COPILOT) and its GitHub login.
 import { CopilotClient, RuntimeConnection } from '@github/copilot-sdk';
 import { copilotQuestion } from './policy.mjs';
+import { orbFilter, stripTags } from './orb.mjs';
 import { VAULT, send, today, readState, writeState, summary, style, loadMcp, ask, cancelPending, onMessages } from './common.mjs';
 
 const client = new CopilotClient({
@@ -10,6 +11,7 @@ const client = new CopilotClient({
 });
 
 let session, day, turnId = null, stopped = false, failed = false, lastText = '';
+const orb = orbFilter((variant) => send({ type: 'orb', id: turnId, variant }));
 
 const config = () => ({
   workingDirectory: VAULT,
@@ -48,9 +50,9 @@ async function start(fresh = false) {
 function handle(e) {
   const d = e.data ?? {};
   if (d.parentToolCallId) return; // sub-agent chatter
-  if (e.type === 'assistant.message_delta') send({ type: 'partial_text', id: turnId, delta: d.deltaContent });
-  else if (e.type === 'assistant.message') lastText = d.content ?? lastText;
-  else if (e.type === 'tool.execution_start') send({ type: 'tool_call', id: turnId, name: d.toolName, summary: summary(d.arguments ?? {}) });
+  if (e.type === 'assistant.message_delta') { const delta = orb.text(d.deltaContent ?? ''); if (delta) send({ type: 'partial_text', id: turnId, delta }); }
+  else if (e.type === 'assistant.message') lastText = stripTags(d.content ?? lastText);
+  else if (e.type === 'tool.execution_start') orb.tool(d.toolName), send({ type: 'tool_call', id: turnId, name: d.toolName, summary: summary(d.arguments ?? {}) });
   else if (e.type === 'session.error') { failed = true; cancelPending(); send({ type: 'error', id: turnId, message: d.message ?? d.errorType }); }
   else if (e.type === 'session.idle') {
     cancelPending();
@@ -78,7 +80,7 @@ onMessages(async (msg) => {
   await ready;
   if (msg.type === 'prompt') {
     if (day !== today()) await restart(); // daily session
-    turnId = msg.id; stopped = failed = false; lastText = '';
+    turnId = msg.id; stopped = failed = false; lastText = ''; orb.reset();
     session.send({ prompt: msg.text }).catch((e) => send({ type: 'error', id: turnId, message: String(e?.message ?? e) }));
   } else if (msg.type === 'interrupt') {
     stopped = true; cancelPending(); session.abort().catch(() => {});
